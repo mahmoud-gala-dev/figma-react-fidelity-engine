@@ -12,6 +12,7 @@ import {
   savePrivatePng,
 } from '../../src/design/asset-manager/asset-manager.mjs';
 import { calculateFidelityAndEvidence } from '../../src/comparison/scoring-engine/scoring-engine.mjs';
+import { compareWithGemini } from '../../src/comparison/ai-engine/gemini-comparison.mjs';
 import { runPixelmatchComparison, runRegCliReport } from '../../src/comparison/visual-engine/visual-comparison.mjs';
 import { generateHtmlReport, generateJsonReport } from '../../src/reports/html/html-report-generator.mjs';
 import { SyncJobManager } from '../jobs/sync-job-manager.mjs';
@@ -63,6 +64,13 @@ export class FigmaSyncOrchestrator {
       activeJobs: this.jobManager.listJobs().slice(0, 10),
       auditLogs: this.readerAdapter.getAuditLogs().slice(-25),
     };
+  }
+
+  async setSessionAuthState({ loggedIn = false, email = null, accountName = null } = {}) {
+    if (typeof this.readerAdapter.setSessionAuthState === 'function') {
+      this.readerAdapter.setSessionAuthState({ loggedIn, email, accountName });
+    }
+    return this.getStatus();
   }
 
   async login({ waitSeconds = 0, url = null, mode = 'login' } = {}) {
@@ -453,6 +461,28 @@ export class FigmaSyncOrchestrator {
       comparedAt: new Date().toISOString(),
       ...calculateFidelityAndEvidence(effectiveRef, actual, visual, options),
     };
+  }
+
+  async compareWithAi({
+    reference = null,
+    actual = null,
+    visual = null,
+    preferredModel = 'gemini-flash-latest',
+    apiKey = null,
+  } = {}) {
+    const effectiveRef = reference || this.currentSync?.ref;
+    if (!effectiveRef || !actual) {
+      const err = new Error('بيانات المرجع (reference) وبيانات التنفيذ الفعلي (actual) مطلوبة للمقارنة الذكية.');
+      err.status = 400;
+      throw err;
+    }
+    return compareWithGemini({
+      reference: effectiveRef,
+      actual,
+      visual,
+      preferredModel,
+      apiKey,
+    });
   }
 
   saveReport(payload = {}) {

@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { execFile, spawn } from 'node:child_process';
 import { assertSyncableDesignUrl, parseFigmaUrl } from '../figma/figma-url-parser.mjs';
 import { normalizeFigmaReaderNode } from '../../design/normalizer/design-normalizer.mjs';
@@ -416,6 +417,27 @@ export class FigmaReaderAdapter {
     }
   }
 
+  setSessionAuthState({ loggedIn = false, email = null, accountName = null } = {}) {
+    if (loggedIn === null) {
+      this.manualSessionState = null;
+      return null;
+    }
+    this.manualSessionState = {
+      loggedIn: Boolean(loggedIn),
+      email: email || (loggedIn ? 'mahmoud-gala-dev@figma.local' : null),
+      accountName: accountName || this.account,
+      updatedAt: new Date().toISOString(),
+    };
+    this.recordLog({
+      command: 'session-state',
+      args: [this.manualSessionState.loggedIn ? 'logged_in' : 'logged_out'],
+      exitCode: 0,
+      durationMs: 1,
+      reason: 'ok',
+    });
+    return this.manualSessionState;
+  }
+
   async getStatus() {
     if (!this.isInstalled()) {
       return {
@@ -441,35 +463,46 @@ export class FigmaReaderAdapter {
         if (!this.cachedExecutablePath) {
           this.cachedExecutablePath = process.env.FIGMA_BROWSER_PATH || defaultExecutable();
         }
-        const scratchPath = path.join(this.stateDir, `history-check-${process.pid}.sqlite`);
-        const cookieSeen = Boolean(
+        fs.mkdirSync(this.cacheDir, { recursive: true });
+        const scratchPath = path.join(this.cacheDir, `history-check-${process.pid}.sqlite`);
+        const detectedCookie = Boolean(
           profileHasLoginCookie(this.profileDir) ||
             profileReachedFigmaFiles(this.profileDir, 0, scratchPath)
         );
+        const effectiveLoggedIn =
+          this.manualSessionState != null ? Boolean(this.manualSessionState.loggedIn) : detectedCookie;
         const loginWindowOpen = Boolean(
-          this.lastBrowserLaunchAt && Date.now() - this.lastBrowserLaunchAt < 10 * 60 * 1000
+          !effectiveLoggedIn && this.lastBrowserLaunchAt && Date.now() - this.lastBrowserLaunchAt < 10 * 60 * 1000
         );
+        const effectiveAccountName = this.manualSessionState?.accountName || this.account;
+        const effectiveUser = effectiveLoggedIn
+          ? {
+              email: this.manualSessionState?.email || `${effectiveAccountName}@figma.com`,
+              handle: effectiveAccountName,
+            }
+          : null;
         return {
           installed: true,
           tool: '@leogcode/figma-reader',
           version: '0.4.2',
-          state: cookieSeen ? 'connected' : loginWindowOpen ? 'awaiting_login' : 'requires_login',
-          loggedIn: cookieSeen,
-          loginCookieSeen: cookieSeen,
+          state: effectiveLoggedIn ? 'connected' : loginWindowOpen ? 'awaiting_login' : 'requires_login',
+          loggedIn: effectiveLoggedIn,
+          loginCookieSeen: detectedCookie,
+          manualAuthConfirmed: Boolean(this.manualSessionState?.loggedIn),
           loginWindowOpen,
-          account: { name: this.account, source: 'FIGMA_ACCOUNT' },
-          user: null,
+          account: { name: effectiveAccountName, source: 'FIGMA_ACCOUNT' },
+          user: effectiveUser,
           mode: 'managed',
           executable: this.cachedExecutablePath || null,
           profile: this.profileDir,
           cacheDir: this.cacheDir,
           httpDevModeAllowed: process.env.NODE_ENV !== 'production',
-          message: cookieSeen
-            ? `متصل عبر figma-reader (${this.account}).`
+          message: effectiveLoggedIn
+            ? `متصل ومصادق حالياً عبر figma-reader (${effectiveUser?.email || effectiveAccountName}). تم إخفاء أزرار فتح المتصفح لتقليل الازدحام البصري.`
             : loginWindowOpen
               ? 'نافذة المتصفح المخصص مفتوحة حاليًا. يمكنك تسجيل الدخول أو استعراض حسابك ثم الضغط على «مزامنة من Figma».'
               : 'حزمة figma-reader جاهزة. يلزم تسجيل الدخول لمرة واحدة في المتصفح المخصص لسحب التصاميم السحابية.',
-          recovery: cookieSeen
+          recovery: effectiveLoggedIn
             ? ''
             : 'اضغط «فتح المتصفح وتسجيل الدخول» أو «فتح حساب Figma» لفتح نافذة المتصفح المستقلة وتسجيل الدخول.',
           internalApiDisclosure: FIGMA_READER_INTERNAL_API_AUDIT,

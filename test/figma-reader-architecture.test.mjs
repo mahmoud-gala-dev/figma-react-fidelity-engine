@@ -631,3 +631,149 @@ test('E2E Browser UI — React Dashboard renders all 5 sections, parses URL, syn
   }
 });
 
+test('Unit & API — Full percentage breakdown, Gemini AI comparison engine, and session auth state toggle', async () => {
+  const { compareSpecs, computePropertyMatchPercentage, COMPARISON_STATUS } = await import('../src/lib/compare.mjs');
+  const {
+    GEMINI_MODEL_CASCADE,
+    buildLocalDeterministicAiFallback,
+  } = await import('../src/comparison/ai-engine/gemini-comparison.mjs');
+
+  assert.equal(GEMINI_MODEL_CASCADE[0], 'gemini-flash-latest');
+  assert.equal(
+    computePropertyMatchPercentage({ kind: 'number' }, 360, 320, false, COMPARISON_STATUS.MISMATCH),
+    88.9
+  );
+
+  const refObj = {
+    text: 'Pay Now',
+    width: 360,
+    height: 52,
+    backgroundColor: '#2563EB',
+    borderRadius: 12,
+    paddingTop: 14,
+    paddingRight: 20,
+    paddingBottom: 14,
+    paddingLeft: 20,
+    fontSize: 16,
+    fontWeight: 700,
+  };
+  const actObj = {
+    text: 'Pay Now',
+    width: 320,
+    height: 52,
+    backgroundColor: '#2563EB',
+    borderRadius: 12,
+    paddingTop: 14,
+    paddingRight: 20,
+    paddingBottom: 14,
+    paddingLeft: 20,
+    fontSize: 16,
+    fontWeight: 700,
+  };
+
+  const comp = compareSpecs(refObj, actObj, { coreOnly: true });
+  assert.equal(comp.score, 75);
+  assert.equal(typeof comp.continuousScore, 'number');
+  assert.equal(comp.continuousScore >= 95, true);
+  assert.equal(Array.isArray(comp.categoryScores), true);
+  assert.equal(comp.categoryScores.length > 0, true);
+  assert.equal(typeof comp.overallPercentages.propertyFidelity, 'number');
+  assert.equal(typeof comp.overallPercentages.continuousProximity, 'number');
+
+  const fallback = buildLocalDeterministicAiFallback(refObj, actObj, comp);
+  assert.equal(fallback.ok, true);
+  assert.equal(typeof fallback.aiScore, 'number');
+  assert.equal(Array.isArray(fallback.keyDiscrepancies), true);
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'figma-session-ai-'));
+  try {
+    const api = createLocalApi({ dataDir: tmpDir });
+
+    const setLoggedInRes = await invokeLocalApi(api, {
+      method: 'POST',
+      url: '/api/figma/session',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ loggedIn: true, accountName: 'Test Account' }),
+    });
+    assert.equal(setLoggedInRes.status, 200);
+    assert.equal(setLoggedInRes.body.loggedIn, true);
+
+    const statusWhenLoggedIn = await invokeLocalApi(api, {
+      method: 'GET',
+      url: '/api/figma/status',
+    });
+    assert.equal(statusWhenLoggedIn.body.loggedIn, true);
+
+    const setLoggedOutRes = await invokeLocalApi(api, {
+      method: 'POST',
+      url: '/api/figma/session',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ loggedIn: false }),
+    });
+    assert.equal(setLoggedOutRes.status, 200);
+    assert.equal(setLoggedOutRes.body.loggedIn, false);
+
+    const aiRes = await invokeLocalApi(api, {
+      method: 'POST',
+      url: '/api/compare/ai',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        reference: refObj,
+        actual: actObj,
+      }),
+    });
+    assert.equal(aiRes.status, 200);
+    const aiBody = aiRes.body;
+    assert.equal(aiBody.ok, true);
+    assert.equal(typeof aiBody.aiScore, 'number');
+    assert.equal(typeof aiBody.executiveSummary, 'string');
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('E2E Browser UI — Conditional login button hiding on loggedIn state, full percentage metrics, and Gemini AI comparison', async () => {
+  const { chromium } = await import('playwright');
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 1050 } });
+    await page.goto('http://127.0.0.1:5173', { waitUntil: 'domcontentloaded' });
+
+    // 1. Verify initial logged-out state shows login banner and browser buttons
+    const banner = page.locator('[data-testid="account-auth-card"]');
+    await banner.waitFor();
+    assert.equal(await banner.getAttribute('data-logged-in'), 'false');
+    assert.equal(await page.locator('[data-testid="login-figma-reader-btn"]').count(), 1);
+    assert.equal(await page.locator('[data-testid="open-figma-account-btn"]').count(), 1);
+    assert.equal(await page.locator('[data-testid="open-current-url-btn"]').count(), 1);
+    assert.equal(await page.locator('[data-testid="auth-box-open-browser-btn"]').count(), 1);
+    assert.equal(await page.locator('[data-testid="auth-box-open-account-btn"]').count(), 1);
+
+    // 2. Toggle to logged-in state -> browser login buttons must disappear to reduce visual clutter
+    await page.locator('[data-testid="toggle-auth-state-btn"]').click();
+    await page.locator('[data-testid="logged-in-declutter-chip"]').waitFor();
+    assert.equal(await banner.getAttribute('data-logged-in'), 'true');
+    assert.equal(await page.locator('[data-testid="login-figma-reader-btn"]').count(), 0);
+    assert.equal(await page.locator('[data-testid="open-figma-account-btn"]').count(), 0);
+    assert.equal(await page.locator('[data-testid="open-current-url-btn"]').count(), 0);
+    assert.equal(await page.locator('[data-testid="auth-box-open-browser-btn"]').count(), 0);
+    assert.equal(await page.locator('[data-testid="auth-box-open-account-btn"]').count(), 0);
+
+    // 3. Toggle back to logged-out state so default state stays clean for other runs
+    await page.locator('[data-testid="toggle-auth-state-btn"]').click();
+    await page.locator('[data-testid="login-figma-reader-btn"]').waitFor();
+    assert.equal(await banner.getAttribute('data-logged-in'), 'false');
+
+    // 4. Verify full percentages breakdown & Gemini AI panel in UI
+    await page.locator('[data-testid="continuous-score"]').waitFor();
+    await page.locator('[data-testid="category-percentages-grid"]').waitFor();
+    await page.locator('[data-testid="gemini-ai-comparison-panel"]').waitFor();
+    await page.locator('[data-testid="gemini-executive-summary"]').waitFor({ timeout: 25000 });
+    const aiSummary = await page.locator('[data-testid="gemini-executive-summary"]').textContent();
+    assert.equal(aiSummary.trim().length > 10, true);
+  } finally {
+    await browser.close();
+  }
+});
+
+

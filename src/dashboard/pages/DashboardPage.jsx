@@ -13,11 +13,14 @@ import {
   loginFigmaReader,
   openFigmaBrowser,
   refreshFigmaDesign,
+  runGeminiAiComparison,
   runVisualComparisonApi,
   saveClientReport,
   saveReportApi,
   syncFigmaDesign,
+  updateFigmaSessionStatus,
 } from '../../integrations/figma/figma-connector-client.mjs';
+import { buildLocalDeterministicAiFallback } from '../../comparison/ai-engine/gemini-comparison.mjs';
 import { importFigmaExportZip, importJsonObject } from '../../lib/import-design.mjs';
 import { buildClientReport, generateJsonReport } from '../../lib/client-report.mjs';
 import { matchSelectedPair } from '../../lib/match-nodes.mjs';
@@ -76,6 +79,9 @@ export function DashboardPage() {
   const [selectedScenarioId, setSelectedScenarioId] = useState('IncorrectWidth');
   const [playwrightInspection, setPlaywrightInspection] = useState(null);
   const [parserComparison, setParserComparison] = useState(null);
+  const [preferredAiModel, setPreferredAiModel] = useState('gemini-flash-latest');
+  const [aiComparison, setAiComparison] = useState(null);
+  const [aiBusy, setAiBusy] = useState(false);
 
   useEffect(() => {
     let stop = false;
@@ -150,6 +156,16 @@ export function DashboardPage() {
   }, []);
 
   const comparison = useMemo(() => compareSpecs(ref, actual), [ref, actual]);
+  const defaultAiComparison = useMemo(
+    () => (ref && actual ? buildLocalDeterministicAiFallback(ref, actual, comparison, visual) : null),
+    [ref, actual, comparison, visual]
+  );
+  const effectiveAiComparison = aiComparison || defaultAiComparison;
+
+  useEffect(() => {
+    setAiComparison(null);
+  }, [ref, actual]);
+
   const genuineVisual =
     (visual?.source === 'figma-plugin-export' ||
       visual?.source === 'figma-reader-screenshot' ||
@@ -169,6 +185,65 @@ export function DashboardPage() {
     } catch (error) {
       setUrlInfo(null);
       setStatusMessage(error.message);
+    }
+  }
+
+  async function handleToggleAuthSession(nextLoggedIn) {
+    setBusy(true);
+    try {
+      const updated = await updateFigmaSessionStatus({
+        loggedIn: Boolean(nextLoggedIn),
+        email: nextLoggedIn ? 'mahmoud-gala-dev@figma.com' : null,
+        accountName: 'figma-fidelity-mvp',
+      });
+      setReaderStatus(updated);
+      setStatusMessage(
+        updated.loggedIn
+          ? 'تم تأكيد تسجيل الدخول على حساب Figma بنجاح — اختفت أزرار فتح المتصفح لتقليل الازدحام البصري.'
+          : 'تم التبديل إلى وضع غير مسجل — ظهرت أزرار فتح المتصفح لتسجيل الدخول إلى حساب Figma.'
+      );
+    } catch (error) {
+      setStatusMessage(error.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleRefreshAuthStatus() {
+    setBusy(true);
+    try {
+      const status = await fetchFigmaReaderStatus();
+      setReaderStatus(status);
+      setStatusMessage(
+        status.loggedIn
+          ? `الحساب مسجل الدخول حاليًا (${status.user?.email || status.account?.name || 'figma-fidelity-mvp'}).`
+          : 'الحساب غير مسجل الدخول حاليًا — يمكنك فتح المتصفح لتسجيل الدخول.'
+      );
+    } catch (error) {
+      setStatusMessage(error.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleRunGeminiCompare() {
+    if (!ref || !actual) return;
+    setAiBusy(true);
+    try {
+      const res = await runGeminiAiComparison({
+        reference: ref,
+        actual,
+        visual,
+        preferredModel: preferredAiModel,
+      });
+      setAiComparison(res);
+      setStatusMessage(
+        `اكتملت المقارنة الذكية عبر ${res.usedModel || preferredAiModel}: الدرجة الذكية ${res.aiScore}% (${res.verdict}).`
+      );
+    } catch (error) {
+      setStatusMessage(error.message);
+    } finally {
+      setAiBusy(false);
     }
   }
 
@@ -553,6 +628,8 @@ export function DashboardPage() {
         onLoginFigmaReader={handleLoginFigmaReader}
         onOpenFigmaAccount={handleOpenFigmaAccount}
         onOpenCurrentUrlInBrowser={handleOpenCurrentUrlInBrowser}
+        onToggleAuthSession={handleToggleAuthSession}
+        onRefreshAuthStatus={handleRefreshAuthStatus}
         onSyncLocalFixture={handleSyncLocalFixture}
         onImportLocalFile={handleImportLocalFile}
       />
@@ -598,6 +675,11 @@ export function DashboardPage() {
         genuineVisual={genuineVisual}
         visual={visual}
         refNode={ref}
+        aiComparison={effectiveAiComparison}
+        aiBusy={aiBusy}
+        preferredAiModel={preferredAiModel}
+        setPreferredAiModel={setPreferredAiModel}
+        onRunGeminiCompare={handleRunGeminiCompare}
         onRunVisualCompare={handleVisualCompare}
         onPrintReport={() => window.print()}
         reportHref={reportHref}

@@ -33,6 +33,7 @@ export function calculateFidelityAndEvidence(reference, actual, visualResult = n
 
   return {
     propertyFidelityScore: propertyResult.score,
+    continuousProximityScore: propertyResult.continuousScore,
     visualSimilarityScore: genuineVisualScore,
     syntheticVisualScore:
       !baselineCheck.isGenuine && typeof visualResult?.pixelSimilarity === 'number'
@@ -43,6 +44,8 @@ export function calculateFidelityAndEvidence(reference, actual, visualResult = n
     catalogSize: EXTENDED_FIELDS.length,
     passedCount: propertyResult.passed,
     discrepancyCount: discrepancies.length,
+    categoryScores: propertyResult.categoryScores || [],
+    overallPercentages: propertyResult.overallPercentages || {},
     statusCounts: propertyResult.statusCounts,
     severityCounts: propertyResult.severityCounts,
     visualBaselineStatus: baselineCheck,

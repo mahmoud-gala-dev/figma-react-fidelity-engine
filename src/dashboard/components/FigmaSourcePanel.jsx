@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 
 const STATE_PILLS = {
   connected: ['connected', 'متصل ومصادق (figma-reader)'],
@@ -26,30 +26,166 @@ export function FigmaSourcePanel({
   onLoginFigmaReader,
   onOpenFigmaAccount,
   onOpenCurrentUrlInBrowser,
+  onToggleAuthSession,
+  onRefreshAuthStatus,
   onSyncLocalFixture,
   onImportLocalFile,
 }) {
+  const [showTechMeta, setShowTechMeta] = useState(false);
+  const isLoggedIn = Boolean(readerStatus?.loggedIn);
+
   const effectiveState = busy
     ? 'synchronizing'
-    : readerStatus?.hasSynchronizedDesign
-      ? 'synchronized'
-      : readerStatus?.state || 'requires_login';
+    : isLoggedIn
+      ? 'connected'
+      : readerStatus?.hasSynchronizedDesign
+        ? 'synchronized'
+        : readerStatus?.state || 'requires_login';
   const [pillClass, pillText] = STATE_PILLS[effectiveState] || STATE_PILLS.requires_login;
 
   return (
     <section className="connector-panel" aria-label="مصدر تصميم Figma (figma-reader)">
       <div className="connector-header">
         <div>
-          <h2>أ. مصدر تصميم Figma (الموصّل الأساسي: figma-reader CLI)</h2>
+          <h2>أ. مصدر تصميم Figma وحالة الحساب (الموصّل الأساسي: figma-reader CLI)</h2>
           <p>
-            مزامنة مباشرة عبر <code dir="ltr">@leogcode/figma-reader</code> باستخدام ملف تعريف متصفح محلي مستقل — دون Figma REST API أو Personal Access Tokens أو إضافات إلزامية. (وضع التطوير مفعّل: يقبل روابط <code dir="ltr">HTTPS</code> و<code dir="ltr">HTTP</code>).
+            مزامنة مباشرة عبر <code dir="ltr">@leogcode/figma-reader</code> باستخدام ملف تعريف متصفح محلي مستقل — دون الحاجة إلى Personal Access Tokens.
           </p>
         </div>
-        <span className={`status-pill ${pillClass}`} data-testid="connection-state">
-          {pillText}
-        </span>
+        <div className="header-badges">
+          <span
+            className={`auth-state-badge ${isLoggedIn ? 'is-logged-in' : 'is-logged-out'}`}
+            data-testid="account-login-indicator"
+          >
+            <span className="status-dot" />
+            {isLoggedIn
+              ? `مسجل الدخول حاليًا (${readerStatus?.user?.email || readerStatus?.account?.name || 'figma-fidelity-mvp'})`
+              : 'غير مسجل الدخول حاليًا على الحساب'}
+          </span>
+          <span className={`status-pill ${pillClass}`} data-testid="connection-state">
+            {pillText}
+          </span>
+        </div>
       </div>
 
+      {/* Account Login Status & Conditional Browser Login Controls */}
+      <div
+        className={`account-auth-card ${isLoggedIn ? 'auth-card-logged-in' : 'auth-card-logged-out'}`}
+        data-testid="account-auth-card"
+        data-logged-in={isLoggedIn ? 'true' : 'false'}
+        role="status"
+      >
+        <div className="account-auth-main">
+          <div className="account-auth-info">
+            <div className="account-auth-title" data-testid="auth-and-version-box">
+              <strong>حالة الحساب والمصادقة (Account Status):</strong>{' '}
+              {isLoggedIn ? (
+                <span className="auth-status-text logged-in" data-testid="logged-in-declutter-chip">
+                  ✓ أنت مسجل الدخول حاليًا على حساب Figma ({readerStatus?.user?.email || readerStatus?.account?.name || 'figma-fidelity-mvp'}) — تم إخفاء أزرار فتح المتصفح تلقائيًا لتقليل الازدحام البصري.
+                </span>
+              ) : (
+                <span className="auth-status-text logged-out">
+                  {readerStatus?.message || 'أنت غير مسجل الدخول حاليًا على حساب Figma. تظهر أدناه أزرار فتح المتصفح لإتمام تسجيل الدخول.'}
+                </span>
+              )}
+              <div className="compact-meta-inline" style={{ marginTop: 6 }}>
+                <span data-testid="http-dev-mode-badge">
+                  <strong>وضع الروابط:</strong> يدعم <code dir="ltr">HTTPS</code> و<code dir="ltr">HTTP</code> (Development Mode)
+                </span>
+                {' • '}
+                <span>
+                  <strong>التقدم:</strong> <span data-testid="sync-progress-text">{syncProgress || 'جاهز للمزامنة'}</span>
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="account-auth-actions">
+            {!isLoggedIn && (
+              <>
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm"
+                  data-testid="auth-box-open-browser-btn"
+                  onClick={onLoginFigmaReader}
+                  disabled={busy}
+                >
+                  فتح المتصفح وتسجيل الدخول
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  data-testid="auth-box-open-account-btn"
+                  onClick={onOpenFigmaAccount}
+                  disabled={busy}
+                >
+                  فتح الحساب (figma.com/files)
+                </button>
+              </>
+            )}
+            <button
+              type="button"
+              className={`btn btn-sm ${isLoggedIn ? 'btn-ghost-subtle' : 'btn-success'}`}
+              data-testid="toggle-auth-state-btn"
+              onClick={() => onToggleAuthSession?.(!isLoggedIn)}
+              disabled={busy}
+              title={
+                isLoggedIn
+                  ? 'التبديل إلى وضع غير مسجل لإظهار أزرار فتح المتصفح مرة أخرى'
+                  : 'تأكيد أنك سجلت الدخول في المتصفح لإخفاء أزرار تسجيل الدخول وتقليل الازدحام البصري'
+              }
+            >
+              {isLoggedIn ? 'إظهار خيارات المتصفح / تبديل الحساب' : '✓ تم تسجيل الدخول (إخفاء الأزرار)'}
+            </button>
+            {onRefreshAuthStatus && (
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                data-testid="refresh-auth-status-btn"
+                onClick={onRefreshAuthStatus}
+                disabled={busy}
+              >
+                فحص الحالة
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Browser Login Buttons Row — ONLY shown when NOT logged in (!isLoggedIn) */}
+        {!isLoggedIn && (
+          <div className="browser-login-drawer" data-testid="browser-login-controls">
+            <button
+              type="button"
+              className="btn btn-primary"
+              data-testid="login-figma-reader-btn"
+              onClick={onLoginFigmaReader}
+              disabled={busy}
+            >
+              🌐 فتح المتصفح وتسجيل الدخول (Open Browser &amp; Login)
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              data-testid="open-figma-account-btn"
+              onClick={onOpenFigmaAccount}
+              disabled={busy}
+            >
+              👤 فتح الحساب وملفات Figma (Open Account)
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              data-testid="open-current-url-btn"
+              onClick={onOpenCurrentUrlInBrowser}
+              disabled={busy}
+            >
+              🔗 فتح الرابط الحالي في المتصفح
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Main Figma URL Input & Sync Controls */}
       <form
         className="connector-row"
         onSubmit={event => {
@@ -73,7 +209,7 @@ export function FigmaSourcePanel({
           onClick={onParseUrl}
           disabled={busy}
         >
-          تحليل الرابط (Parse URL)
+          تحليل الرابط
         </button>
         <button
           type="submit"
@@ -81,7 +217,7 @@ export function FigmaSourcePanel({
           data-testid="sync-figma-btn"
           disabled={busy}
         >
-          {busy ? 'جارٍ المزامنة...' : 'مزامنة من Figma (Sync from Figma)'}
+          {busy ? 'جارٍ المزامنة...' : 'مزامنة من Figma'}
         </button>
         <button
           type="button"
@@ -90,60 +226,43 @@ export function FigmaSourcePanel({
           onClick={() => onRefreshDesign()}
           disabled={busy}
         >
-          تحديث التصميم (Refresh Design)
+          تحديث التصميم
         </button>
       </form>
 
-      <div className="connector-row" style={{ marginTop: 10, flexWrap: 'wrap' }}>
+      {/* Secondary Offline/Local Fixture Toolbar (Compact to reduce visual clutter) */}
+      <div className="secondary-source-bar">
+        <div className="secondary-source-actions">
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            data-testid="sync-local-fixture-btn"
+            onClick={onSyncLocalFixture}
+            disabled={busy}
+          >
+            📦 مزامنة ملف .fig المرجعي عبر figma-reader
+          </button>
+          <label className="upload-button btn-sm">
+            📂 استيراد ملف محلي (.fig / .zip / .json)
+            <input
+              aria-label="استيراد JSON أو ZIP أو FIG"
+              type="file"
+              accept=".json,.zip,.fig,application/json,application/zip"
+              onChange={onImportLocalFile}
+            />
+          </label>
+        </div>
         <button
           type="button"
-          className="btn btn-primary"
-          data-testid="login-figma-reader-btn"
-          onClick={onLoginFigmaReader}
-          disabled={busy}
+          className="btn-link-toggle"
+          onClick={() => setShowTechMeta(v => !v)}
         >
-          🌐 فتح المتصفح وتسجيل الدخول (Open Browser &amp; Login)
+          {showTechMeta ? 'إخفاء تفاصيل المصدر ▲' : 'عرض تفاصيل الإصدار والمصدر ▼'}
         </button>
-        <button
-          type="button"
-          className="btn btn-secondary"
-          data-testid="open-figma-account-btn"
-          onClick={onOpenFigmaAccount}
-          disabled={busy}
-        >
-          👤 فتح الحساب وملفات Figma (Open Account)
-        </button>
-        <button
-          type="button"
-          className="btn btn-secondary"
-          data-testid="open-current-url-btn"
-          onClick={onOpenCurrentUrlInBrowser}
-          disabled={busy}
-        >
-          🔗 فتح الرابط الحالي في المتصفح
-        </button>
-        <button
-          type="button"
-          className="btn btn-secondary"
-          data-testid="sync-local-fixture-btn"
-          onClick={onSyncLocalFixture}
-          disabled={busy}
-        >
-          مزامنة ملف .fig المرجعي عبر figma-reader
-        </button>
-        <label className="upload-button">
-          استيراد بديل / قديم (.fig / .zip / .json)
-          <input
-            aria-label="استيراد JSON أو ZIP أو FIG"
-            type="file"
-            accept=".json,.zip,.fig,application/json,application/zip"
-            onChange={onImportLocalFile}
-          />
-        </label>
       </div>
 
       {urlInfo && (
-        <div className="diagnostic-box" data-testid="parsed-url-info">
+        <div className="diagnostic-box compact-box" data-testid="parsed-url-info">
           <strong>نتيجة تحليل الرابط:</strong> مفتاح الملف:{' '}
           <code dir="ltr">{urlInfo.fileKey}</code> | معرّف العقدة:{' '}
           <code dir="ltr">{urlInfo.nodeId || 'غير محدد'}</code> | البروتوكول:{' '}
@@ -153,64 +272,16 @@ export function FigmaSourcePanel({
         </div>
       )}
 
-      <div className="diagnostic-box" role="status" data-testid="auth-and-version-box">
-        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-          <div>
-            <strong>حالة المصادقة (Authentication Status):</strong>{' '}
-            {readerStatus?.loggedIn ? (
-              <span style={{ color: '#15803d', fontWeight: 700 }}>
-                مصادق ({readerStatus?.user?.email || readerStatus?.account?.name || 'figma-fidelity-mvp'})
-              </span>
-            ) : (
-              <span style={{ color: '#b45309', fontWeight: 600 }}>
-                {readerStatus?.message || 'حزمة figma-reader جاهزة. يلزم تسجيل الدخول لمرة واحدة في المتصفح المخصص لسحب التصاميم السحابية.'}
-              </span>
-            )}
-          </div>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <button
-              type="button"
-              className="btn btn-primary"
-              data-testid="auth-box-open-browser-btn"
-              onClick={onLoginFigmaReader}
-              disabled={busy}
-              style={{ padding: '6px 12px', fontSize: '0.85rem' }}
-            >
-              فتح المتصفح وتسجيل الدخول
-            </button>
-            <button
-              type="button"
-              className="btn btn-secondary"
-              data-testid="auth-box-open-account-btn"
-              onClick={onOpenFigmaAccount}
-              disabled={busy}
-              style={{ padding: '6px 12px', fontSize: '0.85rem' }}
-            >
-              فتح الحساب (figma.com/files)
-            </button>
-          </div>
-        </div>
-        {readerStatus?.recovery ? <div><strong>الإجراء المقترح:</strong> {readerStatus.recovery}</div> : null}
-        <div data-testid="http-dev-mode-badge">
-          <strong>وضع التطوير للروابط (URL Protocol Mode):</strong>{' '}
-          <span style={{ color: '#0369a1', fontWeight: 600 }}>
-            يدعم روابط HTTPS وروابط HTTP في وضع التطوير (figma.com و 127.0.0.1 / localhost)
-          </span>
-        </div>
-        <div>
-          <strong>تقدم المزامنة (Sync Progress):</strong>{' '}
-          <span data-testid="sync-progress-text">{syncProgress || 'جاهز للمزامنة'}</span>
-        </div>
-        <div>
-          <strong>إصدار التصميم والطابع الزمني (Version &amp; Timestamp):</strong>{' '}
+      {showTechMeta && (
+        <div className="diagnostic-box compact-box">
+          <strong>إصدار التصميم والطابع الزمني:</strong>{' '}
           المصدر: <code dir="ltr">{refNode?.source || '—'}</code> | الإصدار/التعديل:{' '}
           <code dir="ltr">{refNode?.sourceVersion || refNode?.fileModifiedAt || refNode?.exportedAt || 'نسخة محلية'}</code>{' '}
           | وقت الاستحواذ: <code dir="ltr">{refNode?.acquiredAt || '—'}</code>
         </div>
-      </div>
+      )}
 
       {changeNote ? <div className="notice">{changeNote}</div> : null}
     </section>
   );
 }
-

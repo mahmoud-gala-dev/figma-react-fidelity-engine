@@ -167,15 +167,85 @@ function formatDifference(field, expected, actualValue, match, gap, status) {
   return `${expected ?? '—'} ≠ ${actualValue ?? 'غير متاح'}`;
 }
 
+export const CATEGORY_METADATA = Object.freeze({
+  geometry: { id: 'geometry', label: 'الأبعاد والهندسة', englishLabel: 'Geometry & Dimensions', icon: '📐' },
+  style: { id: 'style', label: 'الألوان والأنماط', englishLabel: 'Colors & Styling', icon: '🎨' },
+  typography: { id: 'typography', label: 'الطباعة والخطوط', englishLabel: 'Typography', icon: '🔤' },
+  content: { id: 'content', label: 'المحتوى النصي', englishLabel: 'Text Content', icon: '📝' },
+  layout: { id: 'layout', label: 'التخطيط والمحاذاة', englishLabel: 'Layout & Alignment', icon: '⊞' },
+  spacing: { id: 'spacing', label: 'المسافات والحشوات', englishLabel: 'Spacing & Padding', icon: '↔️' },
+  component: { id: 'component', label: 'هوية المكوّن', englishLabel: 'Component Identity', icon: '🧩' },
+  asset: { id: 'asset', label: 'الصور والأيقونات', englishLabel: 'Assets & Icons', icon: '🖼️' },
+});
+
+function parseHexToRgb(hex) {
+  const norm = normalizeHexColor(hex);
+  if (!norm || norm.length < 7) return null;
+  const r = parseInt(norm.slice(1, 3), 16);
+  const g = parseInt(norm.slice(3, 5), 16);
+  const b = parseInt(norm.slice(5, 7), 16);
+  if ([r, g, b].some(v => Number.isNaN(v))) return null;
+  return { r, g, b };
+}
+
+export function computePropertyMatchPercentage(field, expected, actualValue, match, status) {
+  if (status !== COMPARISON_STATUS.MATCH && status !== COMPARISON_STATUS.MISMATCH) return null;
+  if (match) return 100;
+  if (actualValue === null || actualValue === undefined) return 0;
+
+  if (field.kind === 'number') {
+    const numExp = Number(expected);
+    const numAct = Number(actualValue);
+    if (!Number.isFinite(numExp) || !Number.isFinite(numAct)) return 0;
+    const scale = Math.max(Math.abs(numExp), Math.abs(numAct), 1);
+    const ratio = 1 - Math.abs(numAct - numExp) / scale;
+    return Math.max(0, Math.min(99.9, Math.round(ratio * 1000) / 10));
+  }
+
+  if (field.kind === 'color') {
+    const rgbExp = parseHexToRgb(expected);
+    const rgbAct = parseHexToRgb(actualValue);
+    if (!rgbExp || !rgbAct) return 0;
+    const dist = Math.sqrt(
+      (rgbExp.r - rgbAct.r) ** 2 + (rgbExp.g - rgbAct.g) ** 2 + (rgbExp.b - rgbAct.b) ** 2
+    );
+    const maxDist = Math.sqrt(3 * 255 * 255);
+    return Math.max(0, Math.min(99.9, Math.round((1 - dist / maxDist) * 1000) / 10));
+  }
+
+  if (field.kind === 'text' || field.kind === 'fontWeight') {
+    const s1 = String(expected).trim().toLowerCase();
+    const s2 = String(actualValue).trim().toLowerCase();
+    if (!s1 || !s2) return 0;
+    const maxLen = Math.max(s1.length, s2.length);
+    let same = 0;
+    for (let i = 0; i < Math.min(s1.length, s2.length); i++) {
+      if (s1[i] === s2[i]) same++;
+    }
+    return Math.max(0, Math.min(99.9, Math.round((same / maxLen) * 1000) / 10));
+  }
+
+  return 0;
+}
+
 /**
- * Calculates fidelity metrics, comparable rows, full catalog status rows, and discrepancy evidence.
+ * Calculates fidelity metrics, comparable rows, full catalog status rows, category percentages, and discrepancy evidence.
  */
 export function compareSpecs(reference, actual, options = {}) {
   if (!reference || !actual || typeof reference !== 'object' || typeof actual !== 'object') {
     return {
       score: null,
+      continuousScore: null,
       rows: [],
       catalogRows: [],
+      categoryScores: [],
+      overallPercentages: {
+        propertyFidelity: 0,
+        continuousProximity: 0,
+        inspectionCoverage: 0,
+        exactPassRate: 0,
+        mismatchRate: 0,
+      },
       passed: 0,
       total: 0,
       coverage: { tested: 0, totalAvailable: 0, fieldsCount: EXTENDED_FIELDS.length, percentage: 0 },
@@ -197,6 +267,7 @@ export function compareSpecs(reference, actual, options = {}) {
 
   let weightedTotal = 0;
   let earned = 0;
+  let continuousEarned = 0;
   let passed = 0;
   let comparableCount = 0;
   const severityCounts = { high: 0, medium: 0, low: 0 };
@@ -208,10 +279,26 @@ export function compareSpecs(reference, actual, options = {}) {
     [COMPARISON_STATUS.ERROR]: 0,
   };
 
+  const categoryBuckets = new Map();
+  for (const meta of Object.values(CATEGORY_METADATA)) {
+    categoryBuckets.set(meta.id, {
+      ...meta,
+      passed: 0,
+      total: 0,
+      catalogCount: 0,
+      weightEarned: 0,
+      continuousWeightEarned: 0,
+      weightTotal: 0,
+    });
+  }
+
   const rows = [];
   const catalogRows = [];
 
   for (const field of fields) {
+    const catBucket = categoryBuckets.get(field.category);
+    if (catBucket) catBucket.catalogCount += 1;
+
     const expected = reference[field.key];
     const raw = actual[field.key];
     const actualValue = raw === undefined ? null : raw;
@@ -225,6 +312,7 @@ export function compareSpecs(reference, actual, options = {}) {
         expected: expected ?? null,
         actual: actualValue,
         match: false,
+        matchPercentage: null,
         gap: null,
         difference: formatDifference(field, expected, actualValue, false, null, COMPARISON_STATUS.NOT_COMPARABLE),
         severity: 'none',
@@ -244,6 +332,7 @@ export function compareSpecs(reference, actual, options = {}) {
         expected: null,
         actual: actualValue,
         match: false,
+        matchPercentage: null,
         gap: null,
         difference: formatDifference(field, null, actualValue, false, null, COMPARISON_STATUS.NOT_AVAILABLE),
         severity: 'none',
@@ -301,13 +390,24 @@ export function compareSpecs(reference, actual, options = {}) {
     }
 
     statusCounts[status] = (statusCounts[status] || 0) + 1;
+    const matchPercentage = computePropertyMatchPercentage(field, expected, actualValue, match, status);
 
     if (status !== COMPARISON_STATUS.ERROR) {
       comparableCount += 1;
       weightedTotal += field.weight;
+      continuousEarned += field.weight * ((matchPercentage ?? 0) / 100);
       if (match) {
         earned += field.weight;
         passed++;
+      }
+      if (catBucket) {
+        catBucket.total += 1;
+        catBucket.weightTotal += field.weight;
+        catBucket.continuousWeightEarned += field.weight * ((matchPercentage ?? 0) / 100);
+        if (match) {
+          catBucket.passed += 1;
+          catBucket.weightEarned += field.weight;
+        }
       }
     }
 
@@ -323,6 +423,7 @@ export function compareSpecs(reference, actual, options = {}) {
       expected,
       actual: actualValue,
       match,
+      matchPercentage,
       gap,
       difference: formatDifference(field, expected, actualValue, match, gap, status),
       severity,
@@ -336,16 +437,47 @@ export function compareSpecs(reference, actual, options = {}) {
   }
 
   const score = weightedTotal ? Math.round((10000 * earned) / weightedTotal) / 100 : null;
+  const continuousScore = weightedTotal ? Math.round((10000 * continuousEarned) / weightedTotal) / 100 : null;
   const coveragePercentage = EXTENDED_FIELDS.length
     ? Math.round((10000 * comparableCount) / EXTENDED_FIELDS.length) / 100
     : 0;
 
+  const categoryScores = [...categoryBuckets.values()]
+    .filter(c => c.catalogCount > 0)
+    .map(c => ({
+      id: c.id,
+      label: c.label,
+      englishLabel: c.englishLabel,
+      icon: c.icon,
+      passed: c.passed,
+      total: c.total,
+      catalogCount: c.catalogCount,
+      score: c.weightTotal > 0 ? Math.round((10000 * c.weightEarned) / c.weightTotal) / 100 : null,
+      continuousScore:
+        c.weightTotal > 0 ? Math.round((10000 * c.continuousWeightEarned) / c.weightTotal) / 100 : null,
+      weightShare: weightedTotal > 0 ? Math.round((1000 * c.weightTotal) / weightedTotal) / 10 : 0,
+    }));
+
+  const exactPassRate = comparableCount ? Math.round((10000 * passed) / comparableCount) / 100 : 0;
+  const mismatchRate = comparableCount
+    ? Math.round((10000 * (comparableCount - passed)) / comparableCount) / 100
+    : 0;
+
   return {
     score,
+    continuousScore,
     passed,
     total: comparableCount,
     rows,
     catalogRows,
+    categoryScores,
+    overallPercentages: {
+      propertyFidelity: score ?? 0,
+      continuousProximity: continuousScore ?? 0,
+      inspectionCoverage: coveragePercentage,
+      exactPassRate,
+      mismatchRate,
+    },
     statusCounts,
     metricLabel: 'نسبة مطابقة الخصائص المفحوصة (Property Fidelity)',
     coverage: {

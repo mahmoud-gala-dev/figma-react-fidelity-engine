@@ -6,6 +6,7 @@ function localApiPlugin() {
   return {
     name: 'figma-fidelity-local-api',
     configureServer(server) {
+      // Attaches local Figma & Gemini AI comparison middleware
       attachLocalApi(server.middlewares, { cwd: process.cwd() });
     }
   };

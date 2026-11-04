@@ -18,4 +18,5 @@ input/.connector/
 input/.figma-reader-cache/
 input/.figma-snapshots/
 downloads/
+.vercel/
 

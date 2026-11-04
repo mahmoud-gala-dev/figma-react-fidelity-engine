@@ -38,6 +38,18 @@ export async function handleFigmaV2Routes({
     return true;
   }
 
+  if (pathname === '/api/figma/session' && req.method === 'POST') {
+    allow('dashboard', 'local');
+    const body = JSON.parse((await readBody(req, 64_000)).toString('utf8') || '{}');
+    const updatedStatus = await orchestrator.setSessionAuthState({
+      loggedIn: body.loggedIn === null ? null : Boolean(body.loggedIn),
+      email: typeof body.email === 'string' ? body.email.slice(0, 120) : null,
+      accountName: typeof body.accountName === 'string' ? body.accountName.slice(0, 64) : null,
+    });
+    send(200, { ok: true, ...updatedStatus });
+    return true;
+  }
+
   if (pathname === '/api/figma/login' && req.method === 'POST') {
     allow('dashboard', 'local');
     const body = JSON.parse((await readBody(req, 64_000)).toString('utf8') || '{}');
@@ -213,7 +225,7 @@ export async function handleFigmaV2Routes({
     return true;
   }
 
-  if (pathname === '/api/compare' && req.method === 'POST') {
+  if ((pathname === '/api/compare' || pathname === '/api/compare/properties') && req.method === 'POST') {
     allow('dashboard', 'local');
     const body = JSON.parse((await readBody(req, 500_000)).toString('utf8') || '{}');
     const result = orchestrator.compare({
@@ -223,6 +235,20 @@ export async function handleFigmaV2Routes({
       options: body.options || {},
     });
     send(200, result);
+    return true;
+  }
+
+  if (pathname === '/api/compare/ai' && req.method === 'POST') {
+    allow('dashboard', 'local');
+    const body = JSON.parse((await readBody(req, 500_000)).toString('utf8') || '{}');
+    const aiResult = await orchestrator.compareWithAi({
+      reference: body.reference,
+      actual: body.actual,
+      visual: body.visual || null,
+      preferredModel: body.preferredModel || body.model || 'gemini-flash-latest',
+      apiKey: body.apiKey || null,
+    });
+    send(200, aiResult);
     return true;
   }
 
