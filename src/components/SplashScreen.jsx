@@ -18,8 +18,9 @@ export function SplashScreen({
 }) {
   const [reducedMotion, setReducedMotion] = useState(() => {
     if (typeof forceReducedMotion === 'boolean') return forceReducedMotion;
-    if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
-      return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search || '');
+      if (params.get('reducedMotion') === '1') return true;
     }
     return false;
   });
@@ -41,15 +42,7 @@ export function SplashScreen({
   useEffect(() => {
     if (typeof forceReducedMotion === 'boolean') {
       setReducedMotion(forceReducedMotion);
-      return undefined;
     }
-    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return undefined;
-    const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
-    const handler = e => setReducedMotion(Boolean(e.matches));
-    if (mq.addEventListener) mq.addEventListener('change', handler);
-    return () => {
-      if (mq.removeEventListener) mq.removeEventListener('change', handler);
-    };
   }, [forceReducedMotion]);
 
   const timeline = useMemo(
@@ -79,9 +72,12 @@ export function SplashScreen({
     if (reducedMotion || isPaused || isSkipped || manualSceneNumber != null) return undefined;
     if (elapsedMs >= DEFAULT_SPLASH_DURATION_MS) {
       if (isCinemaOverlay) setIsCinemaOverlay(false);
-      return undefined;
+      const loopTimer = setTimeout(() => {
+        setElapsedMs(0);
+      }, 1500);
+      return () => clearTimeout(loopTimer);
     }
-    const stepMs = 60;
+    const stepMs = 50;
     const timer = setInterval(() => {
       setElapsedMs(prev => {
         const next = prev + stepMs;
@@ -322,15 +318,14 @@ export function SplashScreen({
                 <rect x="0" y="0" width="1120" height="400" rx="14" />
               </clipPath>
 
+              <radialGradient id="splash-portal-iris" cx="50%" cy="50%" r="50%">
+                <stop offset="0%" stopColor="#10B981" stopOpacity="0.16" />
+                <stop offset="65%" stopColor="#38BDF8" stopOpacity="0.08" />
+                <stop offset="100%" stopColor="#0F172A" stopOpacity="0" />
+              </radialGradient>
+
               <mask id="splash-aperture-mask">
                 <rect x="0" y="0" width="1120" height="400" fill="white" />
-                <circle
-                  cx="560"
-                  cy="200"
-                  r={isScene5 ? 36 : 0}
-                  fill="black"
-                  className="splash-mask-aperture-circle"
-                />
               </mask>
 
               <filter id="splash-glow-filter" x="-20%" y="-20%" width="140%" height="140%">
@@ -342,7 +337,7 @@ export function SplashScreen({
               </filter>
             </defs>
 
-            <g clipPath="url(#splash-stage-clip)" mask="url(#splash-aperture-mask)">
+            <g clipPath="url(#splash-stage-clip)">
               {/* Base Canvas & Precision Blueprint Grid */}
               <rect x="0" y="0" width="1120" height="400" fill="url(#splash-bg-grad)" />
               <rect x="0" y="0" width="1120" height="400" fill="url(#splash-blueprint-grid)" />
@@ -507,7 +502,7 @@ export function SplashScreen({
                     figma-reader CLI
                   </text>
 
-                  <text x="140" y="193" textAnchor="middle" fill="#CBD5E1" fontSize="10.5" fontWeight="700">
+                  <text x="140" y="193" textAnchor="middle" fill="#CBD5E1" fontSize="10.5" fontWeight="700" direction="rtl" unicodeBidi="embed">
                     مرجع تصميم فيجما الأصلي (Figma Spec)
                   </text>
                 </g>
@@ -573,7 +568,7 @@ export function SplashScreen({
                     Storybook 7 Stories
                   </text>
 
-                  <text x="140" y="193" textAnchor="middle" fill="#CBD5E1" fontSize="10.5" fontWeight="700">
+                  <text x="140" y="193" textAnchor="middle" fill="#CBD5E1" fontSize="10.5" fontWeight="700" direction="rtl" unicodeBidi="embed">
                     التصميم الحالي المنفّذ في React (Actual DOM)
                   </text>
                 </g>
@@ -685,7 +680,7 @@ export function SplashScreen({
                     className="splash-ai-wave-path"
                   />
 
-                  <text x="178" y="168" textAnchor="middle" fill="#E2E8F0" fontSize="11" fontWeight="700">
+                  <text x="178" y="168" textAnchor="middle" fill="#E2E8F0" fontSize="11" fontWeight="700" direction="rtl" unicodeBidi="embed">
                     محاذاة الطبقات وتفسير أسباب النسب بالذكاء الاصطناعي
                   </text>
                 </g>
@@ -816,18 +811,44 @@ export function SplashScreen({
                 className={`splash-scene-layer ${isScene5 ? 'is-visible is-primary-scene' : 'is-subtle'}`}
                 data-testid="splash-scene-5-group"
               >
+                {isScene5 && (
+                  <g className="splash-portal-rings" pointerEvents="none">
+                    <circle
+                      cx="560"
+                      cy="180"
+                      r="158"
+                      fill="url(#splash-portal-iris)"
+                      stroke="#10B981"
+                      strokeWidth="1.4"
+                      strokeDasharray="14 8"
+                      strokeOpacity="0.65"
+                      className="splash-orbit-ring-slow"
+                    />
+                    <circle
+                      cx="560"
+                      cy="180"
+                      r="122"
+                      fill="none"
+                      stroke="#38BDF8"
+                      strokeWidth="1.2"
+                      strokeDasharray="8 6"
+                      strokeOpacity="0.55"
+                      className="splash-orbit-ring-reverse"
+                    />
+                  </g>
+                )}
                 <rect
-                  x="395"
+                  x="375"
                   y="4"
-                  width="330"
-                  height="22"
-                  rx="11"
+                  width="370"
+                  height="24"
+                  rx="12"
                   fill="#065F46"
                   fillOpacity={isScene5 ? '0.95' : '0.55'}
                   stroke="#10B981"
-                  strokeWidth="1"
+                  strokeWidth="1.2"
                 />
-                <text x="560" y="19" textAnchor="middle" fill="#ECFDF5" fontSize="10.5" fontWeight="800">
+                <text x="560" y="19.5" textAnchor="middle" fill="#ECFDF5" fontSize="10.5" fontWeight="800" direction="rtl" unicodeBidi="embed">
                   ✓ اكتملت تهيئة محرك المطابقة الذكي — لوحة العمل جاهزة للتفاعل الفوري
                 </text>
               </g>

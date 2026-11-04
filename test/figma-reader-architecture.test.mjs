@@ -1088,6 +1088,120 @@ test('E2E Browser UI — Minimal URL input & unified button, dynamic Figma desig
   }
 });
 
+test('Unit & E2E — 5-Scene Project-Aware SVG SplashScreen choreography, dark-glass CSS styling, scene transitions, and interactive controls', async () => {
+  const {
+    DEFAULT_SPLASH_DURATION_MS,
+    PROJECT_SPLASH_IDENTITY,
+    SPLASH_SCENES,
+    adaptSplashMetricsToProject,
+    computeSplashTimelineState,
+  } = await import('../src/lib/splash-choreography.mjs');
+
+  // 1. Unit tests for splash-choreography.mjs
+  assert.equal(SPLASH_SCENES.length, 5);
+  assert.equal(PROJECT_SPLASH_IDENTITY.tools.length, 7);
+  assert.ok(DEFAULT_SPLASH_DURATION_MS >= 4000);
+
+  const s1 = computeSplashTimelineState(0);
+  assert.equal(s1.activeSceneNumber, 1);
+  assert.equal(s1.state, 'playing');
+  assert.equal(s1.overallProgress, 0);
+
+  const s3 = computeSplashTimelineState(Math.round(DEFAULT_SPLASH_DURATION_MS * 0.55));
+  assert.equal(s3.activeSceneNumber, 3);
+  assert.equal(s3.state, 'playing');
+
+  const s5Done = computeSplashTimelineState(DEFAULT_SPLASH_DURATION_MS);
+  assert.equal(s5Done.activeSceneNumber, 5);
+  assert.equal(s5Done.state, 'completed');
+  assert.equal(s5Done.overallProgress, 100);
+
+  const manualS4 = computeSplashTimelineState(200, { manualSceneNumber: 4 });
+  assert.equal(manualS4.activeSceneNumber, 4);
+  assert.equal(manualS4.state, 'paused');
+
+  const skippedState = computeSplashTimelineState(100, { skipped: true });
+  assert.equal(skippedState.activeSceneNumber, 5);
+  assert.equal(skippedState.isCompleted, true);
+  assert.equal(skippedState.overallProgress, 100);
+
+  const reducedState = computeSplashTimelineState(100, { reducedMotion: true });
+  assert.equal(reducedState.activeSceneNumber, 4);
+  assert.equal(reducedState.reducedMotion, true);
+
+  const fallbackTelemetry = adaptSplashMetricsToProject({});
+  assert.equal(fallbackTelemetry.nodeId, '942:2734');
+  assert.equal(fallbackTelemetry.refDimensions, '112×100px');
+  assert.equal(fallbackTelemetry.actDimensions, '140×100px');
+
+  // 2. E2E Browser verification of SplashScreen styling, animation, and controls
+  const { chromium } = await import('playwright');
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 1050 } });
+    await page.goto('http://127.0.0.1:5173', { waitUntil: 'domcontentloaded' });
+
+    const splashRoot = page.locator('[data-testid="project-splash-screen"]');
+    await splashRoot.waitFor();
+
+    // Verify CSS styling is applied (not unstyled browser buttons or transparent background)
+    const computedStyles = await page.evaluate(() => {
+      const root = document.querySelector('[data-testid="project-splash-screen"]');
+      const btn = document.querySelector('[data-testid="splash-replay-btn"]');
+      const pill = document.querySelector('[data-testid="splash-scene-btn-1"]');
+      const maskBlackCircles = document.querySelectorAll('#splash-aperture-mask circle[fill="black"]').length;
+      const rootCss = getComputedStyle(root);
+      const btnCss = getComputedStyle(btn);
+      const pillCss = getComputedStyle(pill);
+      return {
+        rootBgImage: rootCss.backgroundImage,
+        rootBorderRadius: rootCss.borderRadius,
+        btnBorderRadius: btnCss.borderRadius,
+        btnBgColor: btnCss.backgroundColor,
+        pillBorderRadius: pillCss.borderRadius,
+        maskBlackCircles,
+      };
+    });
+
+    assert.ok(computedStyles.rootBgImage.includes('linear-gradient'), 'Splash root must have dark linear-gradient background');
+    assert.equal(computedStyles.rootBorderRadius, '18px', 'Splash root must have 18px border-radius from App.css');
+    assert.equal(computedStyles.btnBorderRadius, '9px', 'Splash control buttons must be styled with 9px border-radius');
+    assert.equal(computedStyles.pillBorderRadius, '9px', 'Splash scene pills must be styled with 9px border-radius');
+    assert.equal(computedStyles.maskBlackCircles, 0, 'Must not have a black circle mask hole causing a white circle in Scene 5');
+
+    // Verify stepping through all 5 scenes
+    for (let sceneNum = 1; sceneNum <= 5; sceneNum++) {
+      await page.locator(`[data-testid="splash-scene-btn-${sceneNum}"]`).click();
+      assert.equal(await splashRoot.getAttribute('data-active-scene'), String(sceneNum));
+    }
+
+    // Capture screenshot of Scene 5 to verify no white blotch and clean styling
+    await splashRoot.screenshot({ path: path.resolve('out', 'splash-screen-verified.png') });
+    assert.equal(fs.existsSync(path.resolve('out', 'splash-screen-verified.png')), true);
+
+    // Verify Cinema Mode toggle, Minimize toggle, Skip, and Replay
+    await page.locator('[data-testid="splash-cinema-toggle-btn"]').click();
+    assert.equal(await splashRoot.getAttribute('data-cinema-mode'), 'true');
+    await page.locator('[data-testid="splash-cinema-toggle-btn"]').click();
+    assert.equal(await splashRoot.getAttribute('data-cinema-mode'), 'false');
+
+    await page.locator('[data-testid="splash-minimize-toggle-btn"]').click();
+    assert.equal(await page.locator('[data-testid="splash-stage-viewport"]').count(), 0);
+    await page.locator('[data-testid="splash-minimize-toggle-btn"]').click();
+    assert.equal(await page.locator('[data-testid="splash-stage-viewport"]').count(), 1);
+
+    await page.locator('[data-testid="splash-skip-btn"]').click();
+    assert.equal(await splashRoot.getAttribute('data-splash-state'), 'completed');
+    assert.equal((await page.locator('[data-testid="splash-progress-text"]').textContent()).trim(), '100%');
+
+    await page.locator('[data-testid="splash-replay-btn"]').click();
+    assert.equal(await splashRoot.getAttribute('data-splash-state'), 'playing');
+  } finally {
+    await browser.close();
+  }
+});
+
+
 
 
 

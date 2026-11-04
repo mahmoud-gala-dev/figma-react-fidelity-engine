@@ -197,16 +197,16 @@ export function adaptSplashMetricsToProject({
 } = {}) {
   const nodeId = String(ref?.nodeId || '942:2734');
   const nodeName = String(ref?.nodeName || ref?.text || 'Buy ice cream');
-  const refWidth = Number(ref?.width) > 0 ? Number(ref.width) : 112;
-  const refHeight = Number(ref?.height) > 0 ? Number(ref.height) : 100;
-  const actWidth = Number(actual?.width) > 0 ? Number(actual.width) : 140;
-  const actHeight = Number(actual?.height) > 0 ? Number(actual.height) : 100;
+  const refWidth = Number(ref?.width) > 0 ? Math.round(Number(ref.width)) : 112;
+  const refHeight = Number(ref?.height) > 0 ? Math.round(Number(ref.height)) : 100;
+  const actWidth = Number(actual?.width) > 0 ? Math.round(Number(actual.width)) : 140;
+  const actHeight = Number(actual?.height) > 0 ? Math.round(Number(actual.height)) : 100;
   const refColor = String(ref?.backgroundColor || '#FF9A62').toUpperCase();
   const actColor = String(actual?.backgroundColor || refColor).toUpperCase();
-  const borderRadius = Number.isFinite(Number(ref?.borderRadius)) ? Number(ref.borderRadius) : 6;
-  const propertyScore = Number.isFinite(Number(comparison?.score)) ? Number(comparison.score) : 75;
+  const borderRadius = Number.isFinite(Number(ref?.borderRadius)) ? Math.round(Number(ref.borderRadius)) : 6;
+  const propertyScore = Number.isFinite(Number(comparison?.score)) ? Math.round(Number(comparison.score) * 10) / 10 : 75;
   const continuousScore = Number.isFinite(Number(comparison?.continuousScore))
-    ? Number(comparison.continuousScore)
+    ? Math.round(Number(comparison.continuousScore) * 10) / 10
     : 95;
   const widthDelta = Math.round((actWidth - refWidth) * 10) / 10;
   const widthDeltaLabel = widthDelta === 0 ? '0px (1:1)' : `${widthDelta > 0 ? '+' : ''}${widthDelta}px`;
