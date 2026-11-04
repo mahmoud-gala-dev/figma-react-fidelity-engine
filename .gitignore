@@ -1,0 +1,10 @@
+node_modules/
+dist/
+storybook-static/
+out/*
+!out/.gitkeep
+input/*
+!input/README.md
+*.log
+.env*
+.DS_Store

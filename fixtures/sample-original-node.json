@@ -1,0 +1,52 @@
+{
+  "name": "FigJam basics",
+  "editorType": "figjam",
+  "document": {
+    "type": "DOCUMENT",
+    "children": [
+      {
+        "id": "942:2734",
+        "name": "Buy ice cream",
+        "type": "SHAPE_WITH_TEXT",
+        "scrollBehavior": "SCROLLS",
+        "blendMode": "PASS_THROUGH",
+        "cornerRadius": 6,
+        "cornerSmoothing": 0,
+        "absoluteBoundingBox": {
+          "x": 4432,
+          "y": 196,
+          "width": 112,
+          "height": 99.55555725097656
+        },
+        "absoluteRenderBounds": {
+          "x": 4432,
+          "y": 196,
+          "width": 112,
+          "height": 99.55555725097656
+        },
+        "constraints": {
+          "vertical": "TOP",
+          "horizontal": "LEFT"
+        },
+        "effects": [],
+        "fills": [
+          {
+            "blendMode": "NORMAL",
+            "type": "SOLID",
+            "color": {
+              "r": 1,
+              "g": 0.6039215922355652,
+              "b": 0.3843137323856354,
+              "a": 1
+            }
+          }
+        ],
+        "characters": "Buy ice cream",
+        "shapeType": "SQUARE",
+        "strokes": [],
+        "strokeWeight": 4,
+        "strokeAlign": "INSIDE"
+      }
+    ]
+  }
+}

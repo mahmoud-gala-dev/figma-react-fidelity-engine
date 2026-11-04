@@ -1,0 +1,20 @@
+{
+  "source": "figma-rest-json",
+  "sourceName": "FigJam basics",
+  "sourceEditor": "figjam",
+  "nodeId": "942:2734",
+  "nodeName": "Buy ice cream",
+  "nodeType": "SHAPE_WITH_TEXT",
+  "width": 112,
+  "height": 99.55555725097656,
+  "backgroundColor": "#FF9A62",
+  "borderRadius": 6,
+  "text": "Buy ice cream",
+  "fontSize": null,
+  "fontFamily": null,
+  "absolutePosition": {
+    "x": 4432,
+    "y": 196
+  },
+  "note": "الأبعاد المطلقة X/Y تخص صفحة Figma؛ لا تُقارن مباشرة بإحداثيات المتصفح."
+}
