@@ -205,9 +205,9 @@ export function FigmaSourcePanel({
             type="submit"
             className="btn btn-primary btn-unified-action"
             data-testid="sync-figma-btn"
-            disabled={busy || aiBusy}
+            disabled={busy}
           >
-            {busy || aiBusy
+            {busy
               ? 'جارٍ الإرسال والمطابقة واستخراج النتائج...'
               : 'إرسال ومطابقة واستخراج النتائج والمقارنة'}
           </button>

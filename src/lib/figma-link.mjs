@@ -44,10 +44,16 @@ export function parseFigmaLink(value, options = {}) {
 
   const rawId = url.searchParams.get('node-id');
   let nodeId = null;
+  let rawNodeId = null;
   if (rawId) {
-    const decoded = rawId.replace(/-/g, ':');
-    if (!/^\d+:\d+$/.test(decoded)) throw new Error('معرّف العنصر node-id غير صالح.');
-    nodeId = decoded;
+    const decoded = decodeURIComponent(rawId).trim().replace(/-/g, ':');
+    const segments = decoded.split(';').map(s => s.trim()).filter(Boolean);
+    if (!segments.length || !segments.every(seg => /^I?\d+:\d+$/i.test(seg))) {
+      throw new Error('معرّف العنصر node-id غير صالح.');
+    }
+    rawNodeId = segments.join(';');
+    const leafSegment = segments[segments.length - 1].replace(/^I/i, '');
+    nodeId = leafSegment;
   }
 
   const parts = url.pathname.split('/').filter(Boolean);
@@ -60,6 +66,7 @@ export function parseFigmaLink(value, options = {}) {
       fileKey: hasDesignPath ? parts[1] : 'local-dev-http',
       fileName: hasDesignPath && parts[2] ? decodeURIComponent(parts[2]) : 'Local Dev HTTP Design',
       nodeId: nodeId || '942:2734',
+      rawNodeId: rawNodeId || nodeId || '942:2734',
       url: url.href,
       originalUrl: raw,
       protocol: url.protocol,
@@ -71,7 +78,23 @@ export function parseFigmaLink(value, options = {}) {
     };
   }
 
-  if (!['design', 'file', 'board', 'proto'].includes(parts[0]) || !/^[a-zA-Z0-9]{8,}$/.test(parts[1] || '')) {
+  let kind = parts[0];
+  let fileKey = parts[1] || '';
+  let branchKey = null;
+  let fileName = '';
+
+  if (parts[0] === 'community' && parts[1] === 'file' && /^[a-zA-Z0-9_-]{8,}$/.test(parts[2] || '')) {
+    kind = 'file';
+    fileKey = parts[2];
+    fileName = parts[3] ? decodeURIComponent(parts[3]) : '';
+  } else if (['design', 'file', 'board', 'proto'].includes(parts[0]) && /^[a-zA-Z0-9_-]{8,}$/.test(parts[1] || '')) {
+    if (parts[2] === 'branch' && /^[a-zA-Z0-9_-]{6,}$/.test(parts[3] || '')) {
+      branchKey = parts[3];
+      fileName = parts[4] ? decodeURIComponent(parts[4]) : '';
+    } else {
+      fileName = parts[2] ? decodeURIComponent(parts[2]) : '';
+    }
+  } else {
     throw new Error('صيغة الرابط غير مدعومة. افتح تصميم Figma ثم انسخ رابطه.');
   }
 
@@ -79,16 +102,18 @@ export function parseFigmaLink(value, options = {}) {
   canonicalUrlObj.protocol = 'https:';
 
   return {
-    fileKey: parts[1],
-    fileName: parts[2] ? decodeURIComponent(parts[2]) : '',
+    fileKey,
+    branchKey,
+    fileName,
     nodeId,
+    rawNodeId,
     url: canonicalUrlObj.href,
     originalUrl: raw,
     protocol: url.protocol,
     isHttpDev: url.protocol === 'http:',
     isLocalDevUrl: false,
-    kind: parts[0],
-    surface: parts[0] === 'board' ? 'figjam' : 'design',
+    kind,
+    surface: kind === 'board' ? 'figjam' : 'design',
   };
 }
 

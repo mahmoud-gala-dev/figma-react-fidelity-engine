@@ -818,16 +818,35 @@ test('Unit & API — Figma design image generator, dynamic URL node resolution, 
   const dataUrl = buildFigmaDesignImageDataUrl({ nodeName: 'TestNode', width: 150, height: 60 });
   assert.ok(dataUrl.startsWith('data:image/svg+xml;utf8,'), 'Must return valid SVG data URL');
 
-  // 2. Dynamic URL node resolution (node-id=0-1, node-id=1-2, custom fileKey/nodeId)
+  // 2. Dynamic URL node resolution (node-id=0-1, custom 0-1 URLs, branch/instance URLs, custom fileKey/nodeId)
   const pageNode = resolveUrlDesignNode(
-    'https://www.figma.com/design/vMYpz8Jc3EzVUsLQCDx3Jd/essam-qutb-s-team-library?node-id=0-1&p=f&t=mb24dKflvSkdj3ye-0'
+    'https://www.figma.com/design/vMYpz8Jc3EzVUsLQCDx3Jd/essam-qutb-s-team-library?node-id=0-1&p=f&t=mb24dKflvSkdj3ye-0',
+    { syncedAt: '2026-11-04T22:00:00.000Z' }
   );
   assert.equal(pageNode.nodeId, '0:1');
   assert.equal(pageNode.nodeType, 'PAGE');
   assert.equal(pageNode.width, 296);
   assert.equal(pageNode.height, 140);
   assert.ok(Array.isArray(pageNode.childNodes) && pageNode.childNodes.length === 2);
-  assert.ok(decodeURIComponent(pageNode.previewUrl).includes('296 × 140'));
+  const decodedPageSvg = decodeURIComponent(pageNode.previewUrl);
+  assert.ok(decodedPageSvg.includes('296 × 140'));
+  assert.ok(decodedPageSvg.includes('SYNC: 2026-11-04T22:00:00.000Z'), 'SVG must include syncedAt timestamp');
+
+  // Custom URL on Page 1 (node-id=0-1 or no node-id) must NOT hardcode "Buy ice cream"
+  const customPage01Node = resolveUrlDesignNode(
+    'https://www.figma.com/design/AbCdEf123456/Mobile-Checkout-Flow?node-id=0-1&p=f&t=xyz987'
+  );
+  assert.equal(customPage01Node.nodeId, '0:1');
+  assert.equal(customPage01Node.fileKey, 'AbCdEf123456');
+  assert.notEqual(customPage01Node.previewUrl, pageNode.previewUrl);
+  assert.ok(
+    !decodeURIComponent(customPage01Node.previewUrl).includes('Buy ice cream'),
+    'Custom URL with node-id=0-1 must render custom child artboards, never hardcoded Buy ice cream'
+  );
+  assert.ok(
+    decodeURIComponent(customPage01Node.previewUrl).includes('Mobile Checkout Flow Hero'),
+    'Custom URL with node-id=0-1 must render URL-specific child artboard title'
+  );
 
   const customUrlNode = resolveUrlDesignNode(
     'https://www.figma.com/design/AbCdEf123456/Mobile-Checkout-Flow?node-id=45-88'
@@ -836,6 +855,15 @@ test('Unit & API — Figma design image generator, dynamic URL node resolution, 
   assert.equal(customUrlNode.fileKey, 'AbCdEf123456');
   assert.equal(customUrlNode.fileName, 'Mobile-Checkout-Flow');
   assert.notEqual(customUrlNode.previewUrl, pageNode.previewUrl);
+
+  // Verify figma-reader syncDesign extracts real 0:1 PAGE node and childNodes from sample-design.fig
+  const readerForPage = new FigmaReaderAdapter();
+  const syncedPage01 = await readerForPage.syncDesign('fixtures/sample-design.fig', {
+    nodeId: '0:1',
+  });
+  assert.equal(syncedPage01.selectedNodeId, '0:1');
+  assert.equal(syncedPage01.ref.nodeType, 'PAGE');
+  assert.ok(Array.isArray(syncedPage01.ref.childNodes) && syncedPage01.ref.childNodes.length === 2);
 
   // 3. Compare specs row percentageReason and weightShare + AI Markdown report
   const refNode = {
@@ -868,7 +896,7 @@ test('Unit & API — Figma design image generator, dynamic URL node resolution, 
   assert.ok(aiFallback.markdownReport.includes('| الخاصية (Property) | بيانات تصميم فيجما (Figma) | بيانات التصميم الحالي (Current) |'));
   assert.ok(aiFallback.markdownReport.includes('```css'));
 
-  // 4. API /api/figma/sync & /api/figma/design-image with manual loggedIn=true AND loggedIn=false
+  // 4. API /api/figma/sync, /api/figma/nodes/:id & /api/figma/design-image with manual loggedIn=true AND loggedIn=false
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'figma-img-api-'));
   try {
     const api = createLocalApi({ dataDir: tmpDir });
@@ -921,6 +949,22 @@ test('Unit & API — Figma design image generator, dynamic URL node resolution, 
     assert.equal(syncCustomRes.body.fileKey, 'AbCdEf123456');
     assert.equal(syncCustomRes.body.fileName, 'Mobile-Checkout-Flow');
     assert.notEqual(syncCustomRes.body.previewUrl, syncPage01Res.body.previewUrl);
+
+    // Request a custom node ID via GET /api/figma/nodes/77:88 and GET /api/figma/design-image?nodeId=77:88
+    const customNodeGetRes = await invokeLocalApi(api, {
+      method: 'GET',
+      url: '/api/figma/nodes/77:88',
+    });
+    assert.equal(customNodeGetRes.status, 200, 'GET /api/figma/nodes/77:88 must succeed via resolveUrlDesignNode');
+    assert.equal(customNodeGetRes.body.nodeId, '77:88');
+    assert.ok(customNodeGetRes.body.previewUrl.startsWith('data:image/svg+xml'));
+
+    const customDesignImgRes = await invokeLocalApi(api, {
+      method: 'GET',
+      url: '/api/figma/design-image?nodeId=88:99',
+    });
+    assert.equal(customDesignImgRes.status, 200, 'GET /api/figma/design-image?nodeId=88:99 must succeed');
+    assert.equal(customDesignImgRes.body.nodeId, '88:99');
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }

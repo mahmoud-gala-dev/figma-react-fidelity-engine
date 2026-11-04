@@ -85,7 +85,26 @@ export function normalizeFigmaReaderNode(readerNode, meta = {}) {
   const borderRadius = resolveUniformRadius(readerNode.cornerRadius) ?? 0;
   const borderWidth = resolveUniformStrokeWeight(readerNode.strokeWeight);
 
-  return createCanonicalNode({
+  const isPageNode = readerNode.type === 'PAGE' && Array.isArray(readerNode.children) && readerNode.children.length > 0;
+  const childNodes = isPageNode
+    ? readerNode.children.map(child => {
+        const cFills = Array.isArray(child.fills) ? child.fills : [];
+        const cSolid = cFills.find(f => f?.type === 'SOLID' && f.color);
+        const cText = firstTextChild(child);
+        return {
+          nodeId: child.id,
+          nodeName: child.name || 'Frame',
+          nodeType: child.type || 'FRAME',
+          width: finiteOrNull(child.width) ?? 112,
+          height: finiteOrNull(child.height) ?? 100,
+          backgroundColor: normalizeHexColor(cSolid?.color) || '#FF9A62',
+          borderRadius: resolveUniformRadius(child.cornerRadius) ?? 6,
+          text: typeof cText?.characters === 'string' ? cText.characters : (child.name || 'Frame'),
+        };
+      })
+    : undefined;
+
+  const canonical = createCanonicalNode({
     source,
     sourceName: meta.fileName || readerNode.page || 'Figma Design (figma-reader)',
     sourceEditor: 'figma-design',
@@ -102,8 +121,8 @@ export function normalizeFigmaReaderNode(readerNode, meta = {}) {
     fileModifiedAt: readerNode.fileModifiedAt || null,
     account: readerNode.account || meta.account || null,
 
-    width: finiteOrNull(readerNode.width),
-    height: finiteOrNull(readerNode.height),
+    width: finiteOrNull(readerNode.width) ?? (isPageNode ? 296 : null),
+    height: finiteOrNull(readerNode.height) ?? (isPageNode ? 140 : null),
     x: finiteOrNull(readerNode.x),
     y: finiteOrNull(readerNode.y),
     rotation: finiteOrNull(readerNode.rotation),
@@ -112,10 +131,10 @@ export function normalizeFigmaReaderNode(readerNode, meta = {}) {
         ? { x: readerNode.x, y: readerNode.y }
         : null,
 
-    backgroundColor: normalizeHexColor(solidFill?.color),
-    borderColor: normalizeHexColor(solidStroke?.color),
-    borderWidth,
-    borderRadius,
+    backgroundColor: normalizeHexColor(solidFill?.color) ?? (isPageNode ? '#1E293B' : null),
+    borderColor: normalizeHexColor(solidStroke?.color) ?? (isPageNode ? '#2563EB' : null),
+    borderWidth: borderWidth ?? (isPageNode ? 2 : null),
+    borderRadius: isPageNode && readerNode.cornerRadius == null ? 12 : borderRadius,
     opacity: finiteOrNull(readerNode.opacity) ?? 1,
     visible: readerNode.visible === false ? false : true,
 
@@ -127,7 +146,7 @@ export function normalizeFigmaReaderNode(readerNode, meta = {}) {
     letterSpacing: textStyle.letterSpacing ?? null,
     textAlign: textStyle.align || 'LEFT',
 
-    layoutMode: layout.mode || null,
+    layoutMode: layout.mode || (isPageNode ? 'HORIZONTAL' : null),
     paddingTop: finiteOrNull(padding[0]),
     paddingRight: finiteOrNull(padding[1]),
     paddingBottom: finiteOrNull(padding[2]),
@@ -156,6 +175,10 @@ export function normalizeFigmaReaderNode(readerNode, meta = {}) {
     unsupported: [],
     note: 'عقدة مُطبّعة عبر @leogcode/figma-reader إلى المخطط المعياري الموحد (Canonical Design Schema).',
   });
+  if (childNodes) {
+    canonical.childNodes = childNodes;
+  }
+  return canonical;
 }
 
 /**

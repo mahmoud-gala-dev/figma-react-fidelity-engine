@@ -8,7 +8,11 @@
 import { parseFigmaLink } from './figma-link.mjs';
 
 function normalizeNodeId(value) {
-  return String(value ?? '').trim().replace(/-/g, ':');
+  const raw = String(value ?? '').trim().replace(/-/g, ':');
+  if (!raw) return '';
+  const segments = raw.split(';').map(s => s.trim()).filter(Boolean);
+  const leaf = segments.length ? segments[segments.length - 1] : raw;
+  return leaf.replace(/^I/i, '');
 }
 
 function escapeXml(value) {
@@ -147,15 +151,23 @@ const SYNTHETIC_PALETTES = [
 export function resolveUrlDesignNode(urlOrParsed, { nodeId, baseRef, syncedAt } = {}) {
   const rawUrl = typeof urlOrParsed === 'string'
     ? urlOrParsed.trim()
-    : String(urlOrParsed?.originalUrl || urlOrParsed?.normalizedUrl || baseRef?.extractedUrl || '').trim();
+    : String(urlOrParsed?.originalUrl || urlOrParsed?.url || urlOrParsed?.normalizedUrl || baseRef?.extractedUrl || '').trim();
 
-  const parsed = typeof urlOrParsed === 'object' && urlOrParsed !== null && ('isValid' in urlOrParsed || 'fileKey' in urlOrParsed)
-    ? urlOrParsed
-    : parseFigmaLink(rawUrl);
+  let parsed = null;
+  if (typeof urlOrParsed === 'object' && urlOrParsed !== null && ('isValid' in urlOrParsed || 'fileKey' in urlOrParsed)) {
+    parsed = urlOrParsed;
+  } else if (rawUrl) {
+    try {
+      parsed = parseFigmaLink(rawUrl);
+    } catch {
+      parsed = null;
+    }
+  }
 
   const queryParams = extractUrlQueryParams(rawUrl);
   const fileKey = parsed?.fileKey || baseRef?.fileKey || 'vMYpz8Jc3EzVUsLQCDx3Jd';
   const fileName = parsed?.fileName || baseRef?.fileName || 'essam-qutb-s-team-library';
+  const branchKey = parsed?.branchKey || baseRef?.branchKey || null;
   const humanTitle = humanizeSlug(fileName);
 
   const requestedNodeId = normalizeNodeId(
@@ -167,10 +179,16 @@ export function resolveUrlDesignNode(urlOrParsed, { nodeId, baseRef, syncedAt } 
     fileKey === 'local-fig' ||
     fileKey === 'local-dev-http';
 
+  const isDefaultFileName = !fileName ||
+    fileName === 'essam-qutb-s-team-library' ||
+    fileName === 'sample-design.fig' ||
+    fileName === 'Local Dev HTTP Design' ||
+    fileName === 'Figma Design';
+
   const timestamp = syncedAt || baseRef?.syncedAt || new Date().toISOString();
   let resolved;
 
-  if (requestedNodeId === '0:1') {
+  if (requestedNodeId === '0:1' && isDefaultLibrary && isDefaultFileName && !branchKey) {
     resolved = {
       nodeId: '0:1',
       nodeName: `${humanTitle} — Page 1`,
@@ -195,30 +213,85 @@ export function resolveUrlDesignNode(urlOrParsed, { nodeId, baseRef, syncedAt } 
       opacity: 1,
       layoutMode: 'HORIZONTAL',
       text: `${humanTitle} (0:1)`,
+      childNodes: Array.isArray(baseRef?.childNodes) && baseRef.childNodes.length > 0
+        ? baseRef.childNodes
+        : [
+            {
+              nodeId: '942:2734',
+              nodeName: 'Buy ice cream',
+              nodeType: 'FRAME',
+              width: 112,
+              height: 100,
+              backgroundColor: '#FF9A62',
+              borderRadius: 6,
+              text: 'Buy ice cream'
+            },
+            {
+              nodeId: '1:2',
+              nodeName: 'Primary Action Card',
+              nodeType: 'COMPONENT',
+              width: 160,
+              height: 64,
+              backgroundColor: '#2563EB',
+              borderRadius: 10,
+              text: 'Primary Action Card'
+            }
+          ]
+    };
+  } else if (requestedNodeId === '0:1') {
+    const seed = hashString(`${fileKey}:${branchKey || ''}:${fileName}:0:1:${queryParams.t}`);
+    const paletteA = SYNTHETIC_PALETTES[seed % SYNTHETIC_PALETTES.length];
+    const paletteB = SYNTHETIC_PALETTES[(seed + 3) % SYNTHETIC_PALETTES.length];
+    const pageW = Math.min(332, Math.max(240, paletteA.w + Math.round(paletteB.w * 0.45)));
+    const pageH = Math.min(164, Math.max(124, Math.max(paletteA.h, paletteB.h) + 28));
+    resolved = {
+      nodeId: '0:1',
+      nodeName: `${humanTitle} — Page 1`,
+      nodeType: 'PAGE',
+      width: pageW,
+      height: pageH,
+      backgroundColor: '#0F172A',
+      borderColor: paletteA.border,
+      borderWidth: 2,
+      borderRadius: 12,
+      paddingTop: 16,
+      paddingRight: 20,
+      paddingBottom: 16,
+      paddingLeft: 20,
+      itemSpacing: 16,
+      fontFamily: 'Inter, system-ui, sans-serif',
+      fontSize: 15,
+      fontWeight: '700',
+      lineHeight: 22,
+      letterSpacing: 0,
+      textAlignHorizontal: 'CENTER',
+      opacity: 1,
+      layoutMode: 'HORIZONTAL',
+      text: `${humanTitle} (0:1)`,
       childNodes: [
         {
-          nodeId: '942:2734',
-          nodeName: 'Buy ice cream',
+          nodeId: `${(seed % 800) + 100}:10`,
+          nodeName: `${humanTitle} Hero`,
           nodeType: 'FRAME',
-          width: 112,
-          height: 100,
-          backgroundColor: '#FF9A62',
-          borderRadius: 6,
-          text: 'Buy ice cream'
+          width: paletteA.w,
+          height: paletteA.h,
+          backgroundColor: paletteA.bg === '#0F172A' ? '#4F46E5' : paletteA.bg,
+          borderRadius: paletteA.radius,
+          text: `${humanTitle} Hero`
         },
         {
-          nodeId: '1:2',
-          nodeName: 'Primary Action Card',
+          nodeId: `${(seed % 800) + 100}:20`,
+          nodeName: `${humanTitle} CTA`,
           nodeType: 'COMPONENT',
-          width: 148,
-          height: 108,
-          backgroundColor: '#2563EB',
-          borderRadius: 10,
-          text: 'Primary Action Card'
+          width: paletteB.w,
+          height: paletteB.h,
+          backgroundColor: paletteB.bg,
+          borderRadius: paletteB.radius,
+          text: `${humanTitle} CTA`
         }
       ]
     };
-  } else if (isDefaultLibrary && CANONICAL_LIBRARY_NODES[requestedNodeId]) {
+  } else if (isDefaultLibrary && isDefaultFileName && !branchKey && CANONICAL_LIBRARY_NODES[requestedNodeId]) {
     const preset = CANONICAL_LIBRARY_NODES[requestedNodeId];
     const baseMatches = baseRef && normalizeNodeId(baseRef.nodeId) === requestedNodeId;
     resolved = {
@@ -234,16 +307,17 @@ export function resolveUrlDesignNode(urlOrParsed, { nodeId, baseRef, syncedAt } 
   } else if (
     baseRef &&
     normalizeNodeId(baseRef.nodeId) === requestedNodeId &&
-    baseRef.nodeId !== '942:2734'
+    baseRef.nodeId !== '942:2734' &&
+    (!parsed?.fileKey || parsed.fileKey === baseRef.fileKey)
   ) {
     resolved = {
       ...baseRef,
       nodeId: requestedNodeId
     };
   } else {
-    const seed = hashString(`${fileKey}:${fileName}:${requestedNodeId}:${queryParams.t}`);
+    const seed = hashString(`${fileKey}:${branchKey || ''}:${fileName}:${requestedNodeId}:${queryParams.t}`);
     const palette = SYNTHETIC_PALETTES[seed % SYNTHETIC_PALETTES.length];
-    const labelName = isDefaultLibrary
+    const labelName = (isDefaultLibrary && isDefaultFileName && !branchKey)
       ? `Frame ${requestedNodeId}`
       : `${humanTitle} (${requestedNodeId})`;
     resolved = {
@@ -276,7 +350,9 @@ export function resolveUrlDesignNode(urlOrParsed, { nodeId, baseRef, syncedAt } 
   const finalNode = {
     ...resolved,
     fileKey,
+    branchKey,
     fileName,
+    rawNodeId: parsed?.rawNodeId || requestedNodeId,
     extractedUrl: rawUrl || `https://www.figma.com/design/${fileKey}/${fileName}?node-id=${requestedNodeId.replace(':', '-')}`,
     queryToken: queryParams.t || '',
     syncedAt: timestamp
@@ -293,6 +369,7 @@ export function buildFigmaDesignImageSvg(refNode = {}) {
   const fileName = escapeXml(refNode?.fileName || refNode?.sourceName || 'Figma Design');
   const fileKey = escapeXml(refNode?.fileKey || 'vMYpz8Jc3EzVUsLQCDx3Jd');
   const queryToken = escapeXml(refNode?.queryToken || '');
+  const syncedAt = escapeXml(refNode?.syncedAt || '');
   const rawW = Number(refNode?.width) > 0 ? Number(refNode.width) : 112;
   const rawH = Number(refNode?.height) > 0 ? Number(refNode.height) : 100;
   const bg = escapeXml(refNode?.backgroundColor || '#FF9A62');
@@ -317,19 +394,45 @@ export function buildFigmaDesignImageSvg(refNode = {}) {
   const textColor = isDarkBg ? '#FFFFFF' : '#0F172A';
 
   const hasChildArtboards = Array.isArray(refNode?.childNodes) && refNode.childNodes.length > 0;
-  const childArtboardsSvg = hasChildArtboards
-    ? `
+  let childArtboardsSvg = '';
+  if (hasChildArtboards) {
+    const firstChild = refNode.childNodes[0] || {};
+    const secondChild = refNode.childNodes[1] || null;
+    const c1Name = escapeXml(firstChild.text || firstChild.nodeName || 'Frame 1');
+    const c1Id = escapeXml(firstChild.nodeId || '1:1');
+    const c1W = Number(firstChild.width) > 0 ? Number(firstChild.width) : 112;
+    const c1H = Number(firstChild.height) > 0 ? Number(firstChild.height) : 100;
+    const c1Bg = escapeXml(firstChild.backgroundColor || '#FF9A62');
+    const c1Rx = Number.isFinite(Number(firstChild.borderRadius)) ? Number(firstChild.borderRadius) : 6;
+    const c1Dark = /^#(1|2|0|3|4|5|7)[0-9a-f]{5}$/i.test(String(firstChild.backgroundColor || ''));
+    const c1TextFill = c1Dark ? '#FFFFFF' : '#0F172A';
+
+    const secondSvg = secondChild
+      ? (() => {
+          const c2Name = escapeXml(secondChild.text || secondChild.nodeName || 'Frame 2');
+          const c2Id = escapeXml(secondChild.nodeId || '1:2');
+          const c2W = Number(secondChild.width) > 0 ? Number(secondChild.width) : 148;
+          const c2H = Number(secondChild.height) > 0 ? Number(secondChild.height) : 108;
+          const c2Bg = escapeXml(secondChild.backgroundColor || '#2563EB');
+          const c2Rx = Number.isFinite(Number(secondChild.borderRadius)) ? Number(secondChild.borderRadius) : 10;
+          const c2Dark = /^#(1|2|0|3|4|5|7)[0-9a-f]{5}$/i.test(String(secondChild.backgroundColor || ''));
+          const c2TextFill = c2Dark ? '#FFFFFF' : '#0F172A';
+          return `
+      <rect x="${x + 140}" y="${y + 22}" width="142" height="96" rx="${c2Rx}" fill="${c2Bg}" stroke="#60A5FA" stroke-width="1" />
+      <text x="${x + 211}" y="${y + 70}" dominant-baseline="central" text-anchor="middle" font-family="Inter, system-ui, sans-serif" font-size="11" font-weight="700" fill="${c2TextFill}">${c2Name}</text>
+      <text x="${x + 140}" y="${y + 18}" font-family="monospace" font-size="9" fill="#93C5FD">${c2Id} (${c2W}×${c2H})</text>`;
+        })()
+      : '';
+
+    childArtboardsSvg = `
     <!-- Composite Page Artboards inside ${nodeId} -->
     <g>
-      <rect x="${x + 14}" y="${y + 26}" width="112" height="90" rx="6" fill="#FF9A62" />
-      <text x="${x + 70}" y="${y + 71}" dominant-baseline="central" text-anchor="middle" font-family="Inter, system-ui, sans-serif" font-size="11" font-weight="600" fill="#0F172A">Buy ice cream</text>
-      <text x="${x + 14}" y="${y + 21}" font-family="monospace" font-size="9" fill="#93C5FD">942:2734 (112×100)</text>
-
-      <rect x="${x + 140}" y="${y + 22}" width="142" height="96" rx="10" fill="#2563EB" stroke="#60A5FA" stroke-width="1" />
-      <text x="${x + 211}" y="${y + 70}" dominant-baseline="central" text-anchor="middle" font-family="Inter, system-ui, sans-serif" font-size="11" font-weight="700" fill="#FFFFFF">Primary Action Card</text>
-      <text x="${x + 140}" y="${y + 18}" font-family="monospace" font-size="9" fill="#93C5FD">1:2 (148×108)</text>
-    </g>`
-    : `
+      <rect x="${x + 14}" y="${y + 26}" width="112" height="90" rx="${c1Rx}" fill="${c1Bg}" />
+      <text x="${x + 70}" y="${y + 71}" dominant-baseline="central" text-anchor="middle" font-family="Inter, system-ui, sans-serif" font-size="11" font-weight="600" fill="${c1TextFill}">${c1Name}</text>
+      <text x="${x + 14}" y="${y + 21}" font-family="monospace" font-size="9" fill="#93C5FD">${c1Id} (${c1W}×${c1H})</text>${secondSvg}
+    </g>`;
+  } else {
+    childArtboardsSvg = `
     <text
       x="${x + dispW / 2}"
       y="${y + dispH / 2}"
@@ -340,9 +443,11 @@ export function buildFigmaDesignImageSvg(refNode = {}) {
       font-weight="${fontWeight}"
       fill="${textColor}"
     >${text}</text>`;
+  }
 
   const shortKey = fileKey.length > 10 ? `${fileKey.slice(0, 8)}…` : fileKey;
   const tokenBadge = queryToken ? ` • t=${queryToken.slice(0, 8)}` : '';
+  const syncBadge = syncedAt ? `<text x="${canvasW - 14}" y="${canvasH - 8}" text-anchor="end" font-family="monospace" font-size="9" fill="#64748B">SYNC: ${syncedAt}</text>` : '';
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${canvasW}" height="${canvasH}" viewBox="0 0 ${canvasW} ${canvasH}" role="img" aria-label="صورة تصميم فيجما: ${nodeName}">
   <defs>
@@ -396,6 +501,7 @@ export function buildFigmaDesignImageSvg(refNode = {}) {
   <!-- Figma Dimension Pill below node -->
   <rect x="${Math.round(canvasW / 2 - 48)}" y="${y + dispH + 7}" width="96" height="20" rx="4" fill="#0D99FF" />
   <text x="${Math.round(canvasW / 2)}" y="${y + dispH + 20}" text-anchor="middle" font-family="monospace" font-size="11" font-weight="700" fill="#FFFFFF">${rawW} × ${rawH}</text>
+  ${syncBadge}
 </svg>`;
 }
 

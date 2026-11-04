@@ -224,47 +224,76 @@ export class FigmaSyncOrchestrator {
     }
 
     // Step 5, 6, 7: Launch bounded acquisition & normalize data
-    const { job, result } = await this.jobManager.runBounded(
-      {
-        type: refresh ? 'figma-refresh' : 'figma-sync',
-        target: effectiveTarget,
-        nodeId: effectiveNodeId,
-      },
-      async () => {
-        try {
-          return await this.readerAdapter.syncDesign(effectiveTarget, {
-            nodeId: effectiveNodeId,
-            refresh: Boolean(refresh),
-            captureImage: Boolean(captureImage),
-          });
-        } catch (cliErr) {
-          // If allowDevFallback is enabled and live cloud sync failed (e.g. locked profile or unauthenticated), fall back to local fixture + URL node resolver
-          if (!isLocalFig && allowDevFallback && fs.existsSync(defaultFixtureFig)) {
-            isLocalFig = true;
-            usedDevFallback = true;
-            effectiveTarget = defaultFixtureFig;
-            try {
-              return await this.readerAdapter.syncDesign(defaultFixtureFig, {
-                nodeId: effectiveNodeId,
-                refresh: false,
-                captureImage: Boolean(captureImage),
-              });
-            } catch {
-              return await this.openFigAdapter.parseFigFile(defaultFixtureFig, {
+    let job = null;
+    let result = null;
+    try {
+      const bounded = await this.jobManager.runBounded(
+        {
+          type: refresh ? 'figma-refresh' : 'figma-sync',
+          target: effectiveTarget,
+          nodeId: effectiveNodeId,
+        },
+        async () => {
+          try {
+            return await this.readerAdapter.syncDesign(effectiveTarget, {
+              nodeId: effectiveNodeId,
+              refresh: Boolean(refresh),
+              captureImage: Boolean(captureImage),
+            });
+          } catch (cliErr) {
+            // If allowDevFallback is enabled and live cloud sync failed (e.g. locked profile or unauthenticated), fall back to local fixture + URL node resolver
+            if (!isLocalFig && allowDevFallback && fs.existsSync(defaultFixtureFig)) {
+              isLocalFig = true;
+              usedDevFallback = true;
+              effectiveTarget = defaultFixtureFig;
+              try {
+                return await this.readerAdapter.syncDesign(defaultFixtureFig, {
+                  nodeId: effectiveNodeId,
+                  refresh: false,
+                  captureImage: Boolean(captureImage),
+                });
+              } catch {
+                return await this.openFigAdapter.parseFigFile(defaultFixtureFig, {
+                  nodeId: effectiveNodeId,
+                });
+              }
+            }
+            // If local .fig file was requested and figma-reader failed, try OpenFig Core fallback
+            if (isLocalFig) {
+              return await this.openFigAdapter.parseFigFile(effectiveTarget, {
                 nodeId: effectiveNodeId,
               });
             }
+            throw cliErr;
           }
-          // If local .fig file was requested and figma-reader failed, try OpenFig Core fallback
-          if (isLocalFig) {
-            return await this.openFigAdapter.parseFigFile(effectiveTarget, {
-              nodeId: effectiveNodeId,
-            });
-          }
-          throw cliErr;
         }
+      );
+      job = bounded.job;
+      result = bounded.result;
+    } catch (boundedErr) {
+      if (allowDevFallback && boundedErr?.reason === 'concurrency_limit_reached') {
+        usedDevFallback = true;
+        const fallbackNode = resolveUrlDesignNode(parsedUrl?.url || rawTarget, {
+          nodeId: effectiveNodeId || '942:2734',
+          baseRef: this.currentSync?.ref || null,
+        });
+        result = {
+          ok: true,
+          adapter: 'figma-reader',
+          source: 'figma-url-node-render',
+          fileKey: fallbackNode.fileKey,
+          fileName: fallbackNode.fileName,
+          selectedNodeId: fallbackNode.nodeId,
+          ref: fallbackNode,
+          index: this.currentSync?.index || [],
+          hierarchy: this.currentSync?.hierarchy || { pages: [], frames: [], components: [], allNodes: [] },
+        };
+      } else {
+        throw boundedErr;
       }
-    );
+    }
+
+    const syncedAt = new Date().toISOString();
 
     // Step 8: Track revision changes & save private local snapshot (never deletes existing snapshots)
     const hasRealScreenshot = Boolean(result.screenshot?.ok && result.screenshot.bytes);
@@ -276,21 +305,27 @@ export class FigmaSyncOrchestrator {
         result.screenshot.bytes
       );
       result.ref.previewSource = 'figma-reader-screenshot';
-      result.ref.previewUrl = `/api/figma-connector/assets/${encodeURIComponent(safeAssetKey)}`;
+      result.ref.previewUrl = `/api/figma-connector/assets/${encodeURIComponent(safeAssetKey)}?t=${Date.now()}`;
       result.ref.figmaImageUrl = result.ref.previewUrl;
       result.ref.screenshotPath = savedImgPath;
+      result.ref.syncedAt = syncedAt;
     }
 
-    const requestedCleanNodeId = effectiveNodeId ? String(effectiveNodeId).replace(/-/g, ':') : null;
+    const requestedCleanNodeId = effectiveNodeId ? String(effectiveNodeId).replace(/-/g, ':').split(';').pop().replace(/^I/i, '') : null;
     const nodeMismatchWithRequest = Boolean(
       requestedCleanNodeId && result.selectedNodeId !== requestedCleanNodeId
     );
     const hasCustomUrlTarget = Boolean(
       parsedUrl &&
-        parsedUrl.fileKey &&
-        parsedUrl.fileKey !== 'vMYpz8Jc3EzVUsLQCDx3Jd' &&
-        parsedUrl.fileKey !== 'local-dev-http' &&
-        parsedUrl.fileKey !== 'local-fig'
+        ((parsedUrl.fileKey &&
+          parsedUrl.fileKey !== 'vMYpz8Jc3EzVUsLQCDx3Jd' &&
+          parsedUrl.fileKey !== 'local-dev-http' &&
+          parsedUrl.fileKey !== 'local-fig') ||
+          (parsedUrl.fileName &&
+            parsedUrl.fileName !== 'essam-qutb-s-team-library' &&
+            parsedUrl.fileName !== 'sample-design.fig' &&
+            parsedUrl.fileName !== 'Local Dev HTTP Design') ||
+          parsedUrl.branchKey)
     );
 
     if (
@@ -301,21 +336,24 @@ export class FigmaSyncOrchestrator {
       const resolvedUrlNode = resolveUrlDesignNode(parsedUrl?.url || rawTarget, {
         nodeId: requestedCleanNodeId || result.selectedNodeId,
         baseRef: result.ref,
+        syncedAt,
       });
       result.ref = {
         ...result.ref,
         ...resolvedUrlNode,
+        syncedAt,
         previewSource: 'figma-url-node-render',
       };
       result.ref.figmaImageUrl = result.ref.previewUrl;
       result.selectedNodeId = resolvedUrlNode.nodeId;
-    } else if (usedDevFallback && parsedUrl && result?.ref) {
+    } else if (parsedUrl && result?.ref) {
       if (parsedUrl.fileKey) result.ref.fileKey = parsedUrl.fileKey;
       if (parsedUrl.fileName) result.ref.fileName = parsedUrl.fileName;
       result.ref.extractedUrl = parsedUrl.url || rawTarget;
     }
 
     if (result?.ref && !hasRealScreenshot) {
+      result.ref.syncedAt = syncedAt;
       result.ref.previewUrl = buildFigmaDesignImageDataUrl(result.ref);
       result.ref.figmaImageUrl = result.ref.previewUrl;
       result.ref.previewSource = result.ref.previewSource || 'figma-node-svg-render';
@@ -354,7 +392,7 @@ export class FigmaSyncOrchestrator {
       change,
       snapshot: snapshotMeta,
       job,
-      syncedAt: new Date().toISOString(),
+      syncedAt,
     };
 
     return this.currentSync;
@@ -448,7 +486,7 @@ export class FigmaSyncOrchestrator {
       err.status = 400;
       throw err;
     }
-    const cleanId = decodeURIComponent(nodeId).replace(/-/g, ':');
+    const cleanId = decodeURIComponent(nodeId).replace(/-/g, ':').split(';').pop().replace(/^I/i, '');
     if (!this.currentSync) {
       await this.ensureDefaultDesignLoaded(cleanId);
       if (this.currentSync && this.currentSync.selectedNodeId === cleanId) {
@@ -468,31 +506,43 @@ export class FigmaSyncOrchestrator {
       }
     }
 
-    const { rawNode, canonical: baseCanonical } = await this.readerAdapter.getNode(this.currentSync.target, {
-      nodeId: cleanId,
-      depth: 3,
-      refresh: false,
-      fileKey: this.currentSync.fileKey,
-      fileName: this.currentSync.fileName,
-    });
+    let rawNode = null;
+    let baseCanonical = null;
+    try {
+      const nodeRes = await this.readerAdapter.getNode(this.currentSync.target, {
+        nodeId: cleanId,
+        depth: 3,
+        refresh: false,
+        fileKey: this.currentSync.fileKey,
+        fileName: this.currentSync.fileName,
+      });
+      rawNode = nodeRes.rawNode;
+      baseCanonical = nodeRes.canonical;
+    } catch {
+      baseCanonical = this.currentSync.ref;
+    }
 
+    const syncedAt = new Date().toISOString();
     let canonical = baseCanonical;
-    if (canonical && (cleanId === '0:1' || canonical.nodeId !== cleanId)) {
+    if (!canonical || cleanId === '0:1' || canonical.nodeId !== cleanId) {
       const resolvedUrlNode = resolveUrlDesignNode(
         this.currentSync.ref?.extractedUrl || `https://www.figma.com/design/${this.currentSync.fileKey}/${this.currentSync.fileName}?node-id=${cleanId.replace(':', '-')}`,
         {
           nodeId: cleanId,
           baseRef: canonical,
+          syncedAt,
         }
       );
       canonical = {
-        ...canonical,
+        ...(canonical || {}),
         ...resolvedUrlNode,
+        syncedAt,
         previewSource: 'figma-url-node-render',
       };
     }
 
     if (canonical) {
+      canonical.syncedAt = syncedAt;
       canonical.previewUrl = buildFigmaDesignImageDataUrl(canonical);
       canonical.figmaImageUrl = canonical.previewUrl;
     }

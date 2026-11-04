@@ -93,6 +93,7 @@ export function DashboardPage() {
   const [aiComparison, setAiComparison] = useState(null);
   const [aiBusy, setAiBusy] = useState(false);
   const authMutationSeq = React.useRef(0);
+  const aiReqSeq = React.useRef(0);
 
   function switchPage(nextPage) {
     setActivePage(nextPage);
@@ -253,6 +254,7 @@ export function DashboardPage() {
 
   async function handleRunGeminiCompare(customRef = ref, customActual = actual) {
     if (!customRef || !customActual) return;
+    const reqId = ++aiReqSeq.current;
     setAiBusy(true);
     try {
       const res = await runGeminiAiComparison({
@@ -261,14 +263,20 @@ export function DashboardPage() {
         visual,
         preferredModel: preferredAiModel,
       });
-      setAiComparison(res);
-      setStatusMessage(
-        `اكتملت المقارنة الذكية وتفسير النسب بالمارك داون عبر ${res.usedModel || preferredAiModel}: الدرجة الذكية ${res.aiScore}% (${res.verdict}).`
-      );
+      if (aiReqSeq.current === reqId) {
+        setAiComparison(res);
+        setStatusMessage(
+          `اكتملت المقارنة الذكية وتفسير النسب بالمارك داون عبر ${res.usedModel || preferredAiModel}: الدرجة الذكية ${res.aiScore}% (${res.verdict}).`
+        );
+      }
     } catch (error) {
-      setStatusMessage(error.message);
+      if (aiReqSeq.current === reqId) {
+        setStatusMessage(error.message);
+      }
     } finally {
-      setAiBusy(false);
+      if (aiReqSeq.current === reqId) {
+        setAiBusy(false);
+      }
     }
   }
 
@@ -355,29 +363,24 @@ export function DashboardPage() {
             allowDevFallback: true,
           });
 
-      const resolvedRef =
-        synced.ref && synced.ref.nodeId === requestedNodeId
-          ? {
-              ...synced.ref,
-              fileKey: parsed.fileKey || synced.ref.fileKey,
-              fileName: parsed.fileName || synced.ref.fileName,
-              extractedUrl: figmaUrl.trim(),
-            }
-          : resolveUrlDesignNode(figmaUrl, {
-              nodeId: requestedNodeId,
-              baseRef: synced.ref,
-            });
+      const syncedAt = synced.syncedAt || new Date().toISOString();
+      const resolvedRef = resolveUrlDesignNode(figmaUrl, {
+        nodeId: requestedNodeId,
+        baseRef: synced.ref,
+        syncedAt,
+      });
 
       const imgUrl =
         synced.ref?.previewSource === 'figma-reader-screenshot' && synced.previewUrl
-          ? `${synced.previewUrl}?t=${Date.now()}`
-          : buildFigmaDesignImageDataUrl(resolvedRef);
+          ? (synced.previewUrl.includes('?') ? synced.previewUrl : `${synced.previewUrl}?t=${Date.now()}`)
+          : buildFigmaDesignImageDataUrl({ ...resolvedRef, syncedAt });
 
       const enrichedRef = {
+        ...(synced.ref || {}),
         ...resolvedRef,
         previewUrl: imgUrl,
         figmaImageUrl: imgUrl,
-        syncedAt: synced.syncedAt || new Date().toISOString(),
+        syncedAt,
       };
       const nodeChanged =
         !actual ||
@@ -421,8 +424,9 @@ export function DashboardPage() {
         nodeId: selectedNodeId || '942:2734',
         refresh: false,
       });
-      const imgUrl = synced.previewUrl || synced.ref?.previewUrl || buildFigmaDesignImageDataUrl(synced.ref);
-      const enrichedRef = { ...synced.ref, previewUrl: imgUrl, figmaImageUrl: imgUrl };
+      const syncedAt = synced.syncedAt || new Date().toISOString();
+      const imgUrl = synced.previewUrl || synced.ref?.previewUrl || buildFigmaDesignImageDataUrl({ ...synced.ref, syncedAt });
+      const enrichedRef = { ...synced.ref, previewUrl: imgUrl, figmaImageUrl: imgUrl, syncedAt };
       setRef(enrichedRef);
       setActual(copiedActual(enrichedRef));
       setPreviewUrl(imgUrl);
@@ -431,7 +435,7 @@ export function DashboardPage() {
       if (synced.hierarchy) setHierarchy(synced.hierarchy);
       if (synced.index) setNodes(synced.index);
       if (synced.change?.summary) setChangeNote(synced.change.summary);
-      setSyncProgress(`تم استخراج وتطبيع التصميم عبر figma-reader (${synced.syncedAt})`);
+      setSyncProgress(`تم استخراج وتطبيع التصميم عبر figma-reader (${syncedAt})`);
       setStatusMessage(
         `تمت المزامنة الفعلية عبر figma-reader للعقدة ${synced.selectedNodeId} (${synced.ref?.nodeName}) — استُخرجت ${synced.ref?.extractionCoverage?.extractedCount} خاصية معيارية.`
       );
@@ -451,10 +455,11 @@ export function DashboardPage() {
     setBusy(true);
     setSyncProgress(`جارٍ جلب خصائص وصورة العقدة ${nodeId} عبر figma-reader...`);
     try {
-      const res = await fetchFigmaNode(nodeId);
+      const res = await fetchFigmaNode(nodeId, figmaUrl);
       if (res?.ref) {
-        const imgUrl = res.previewUrl || res.ref?.previewUrl || buildFigmaDesignImageDataUrl(res.ref);
-        const enrichedRef = { ...res.ref, previewUrl: imgUrl, figmaImageUrl: imgUrl };
+        const syncedAt = res.ref.syncedAt || new Date().toISOString();
+        const imgUrl = res.previewUrl || res.ref?.previewUrl || buildFigmaDesignImageDataUrl({ ...res.ref, syncedAt });
+        const enrichedRef = { ...res.ref, previewUrl: imgUrl, figmaImageUrl: imgUrl, syncedAt };
         setRef(enrichedRef);
         setActual(copiedActual(enrichedRef));
         setPreviewUrl(imgUrl);

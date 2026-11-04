@@ -696,7 +696,7 @@ export class FigmaReaderAdapter {
 
   async getNode(target, { nodeId = null, depth = 3, refresh = false, fileKey = null, fileName = null, timeoutMs = this.defaultTimeoutMs } = {}) {
     const validated = this.validateTarget(target);
-    const wantedId = (nodeId || validated.nodeId || '').replace(/-/g, ':');
+    const wantedId = (nodeId || validated.nodeId || '').replace(/-/g, ':').split(';').pop().replace(/^I/i, '');
     if (!wantedId || !SAFE_NODE_ID_RE.test(wantedId)) {
       throw new Error('يلزم تحديد معرّف عقدة صالح (node-id) لاستخراج خصائصها.');
     }
@@ -733,7 +733,7 @@ export class FigmaReaderAdapter {
 
   async captureScreenshot(target, { nodeId = null, savePath = null, maxDimension = 1568, timeoutMs = 60_000 } = {}) {
     const validated = this.validateTarget(target);
-    const wantedId = (nodeId || validated.nodeId || '').replace(/-/g, ':');
+    const wantedId = (nodeId || validated.nodeId || '').replace(/-/g, ':').split(';').pop().replace(/^I/i, '');
     if (!wantedId || !SAFE_NODE_ID_RE.test(wantedId)) {
       throw new Error('يلزم تحديد معرّف عقدة صالح لالتقاط صورة PNG مرجعية.');
     }
@@ -806,9 +806,9 @@ export class FigmaReaderAdapter {
     // Subsequent calls in the same sync use the freshly exported/loaded snapshot without re-exporting
     const tree = await this.getTree(validated.target, { depth: 2, maxNodes: 400, refresh: false, timeoutMs });
 
-    const rawCandidateId = (nodeId || validated.nodeId || '').replace(/-/g, ':');
+    const rawCandidateId = (nodeId || validated.nodeId || '').replace(/-/g, ':').split(';').pop().replace(/^I/i, '');
     const matchedInTree = rawCandidateId
-      ? tree.nodes.find(n => n.id === rawCandidateId && n.type !== 'PAGE')
+      ? tree.nodes.find(n => n.id === rawCandidateId)
       : null;
 
     const candidateNodeId =
@@ -838,6 +838,36 @@ export class FigmaReaderAdapter {
         nodeId: candidateNodeId,
         timeoutMs: 45_000,
       }).catch(() => null);
+    } else if (captureImage && validated.kind === 'local-fig' && fs.existsSync(validated.target)) {
+      try {
+        const { unzipSync } = await import('fflate');
+        const buf = fs.readFileSync(validated.target);
+        if (buf[0] === 0x50 && buf[1] === 0x4b) {
+          const entries = unzipSync(buf);
+          const assetRefs = Array.isArray(canonical?.assetReferences) ? canonical.assetReferences : [];
+          let embeddedBytes = null;
+          for (const hash of assetRefs) {
+            const candidate = entries[`images/${hash}`];
+            if (candidate && candidate.length > 8 && candidate[0] === 0x89 && candidate[1] === 0x50) {
+              embeddedBytes = Buffer.from(candidate);
+              break;
+            }
+          }
+          if (!embeddedBytes && entries['thumbnail.png'] && entries['thumbnail.png'][0] === 0x89 && entries['thumbnail.png'][1] === 0x50) {
+            embeddedBytes = Buffer.from(entries['thumbnail.png']);
+          }
+          if (embeddedBytes) {
+            screenshot = {
+              ok: true,
+              byteLength: embeddedBytes.length,
+              bytes: embeddedBytes,
+              source: 'figma-reader-screenshot',
+            };
+          }
+        }
+      } catch {
+        // Ignore if .fig archive has no embedded PNGs
+      }
     }
 
     return {
