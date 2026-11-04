@@ -1,12 +1,9 @@
 import React from 'react';
-import { DesignItem } from '../../components/DesignItem.jsx';
 import { STORYBOOK_SCENARIOS } from '../../inspection/storybook/storybook-scenarios.mjs';
 
 export function ReactImplementationPanel({
-  refNode,
   actual,
   setActual,
-  previewUrl,
   selectedScenarioId,
   onSelectScenario,
   playwrightInspection,
@@ -16,39 +13,14 @@ export function ReactImplementationPanel({
   busy,
 }) {
   return (
-    <section aria-label="معاينة تنفيذ React وتكامل Storybook وPlaywright" data-testid="react-implementation-section">
-      <div className="preview-grid">
-        <article className="panel">
-          <div className="panel-head">
-            <h2>{previewUrl ? 'مرجع التصميم الأصلي (Figma Reference)' : 'مرجع التصميم المطبّع (Canonical Reference)'}</h2>
-            <span>
-              {refNode?.sourceName} <code dir="ltr">{refNode?.nodeId || ''}</code>
-            </span>
-          </div>
-          <div className="stage stage-compare" data-testid="reference-canvas">
-            {previewUrl ? (
-              <img alt="مرجع التصميم الأصلي" src={previewUrl} style={{ maxWidth: '100%', maxHeight: '100%' }} />
-            ) : (
-              <DesignItem spec={refNode} testId="reference-item" reference />
-            )}
-          </div>
-        </article>
-
-        <article className="panel">
-          <div className="panel-head">
-            <h2>ج. تنفيذ React الفعلي (DesignItem)</h2>
-            <span>مشترك مع Storybook وPlaywright</span>
-          </div>
-          <div className="stage stage-compare" data-testid="actual-canvas">
-            <DesignItem spec={actual} testId="react-item" />
-          </div>
-        </article>
-      </div>
-
+    <section
+      aria-label="إعدادات تنفيذ React وتكامل Storybook وPlaywright"
+      data-testid="react-implementation-section"
+    >
       <div className="lower-grid">
         <article className="panel">
           <div className="panel-head">
-            <h2>سيناريوهات Storybook السبعة والتحكم بخصائص React</h2>
+            <h2>سيناريوهات Storybook السبعة والتحكم بخصائص التصميم الحالي (React)</h2>
             <span>Storybook 10.6</span>
           </div>
 
@@ -189,7 +161,7 @@ export function ReactImplementationPanel({
             </div>
           ) : (
             <p className="small">
-              اضغط على «فحص DOM/CSS عبر Playwright» لفتح جلسة Chromium معزولة (لا تتداخل مع جلسة <code dir="ltr">figma-reader</code>) واستخراج القيم المحسوبة من المتصفح الحقيقي والتقاط صور حتمية للمكوّن على سطح المكتب والجوال.
+              اضغط على «فحص DOM/CSS عبر Playwright» لفتح جلسة Chromium معزولة واستخراج القيم المحسوبة من المتصفح الحقيقي والتقاط صور حتمية للمكوّن على سطح المكتب والجوال.
             </p>
           )}
         </article>
@@ -197,4 +169,3 @@ export function ReactImplementationPanel({
     </section>
   );
 }
-

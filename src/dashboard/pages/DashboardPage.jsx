@@ -1,5 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { compareSpecs, EXTENDED_FIELDS } from '../../lib/compare.mjs';
+import {
+  buildFigmaDesignImageDataUrl,
+  resolveUrlDesignNode,
+} from '../../lib/figma-image-generator.mjs';
 import { parseFigmaUrl } from '../../integrations/figma/figma-url-parser.mjs';
 import {
   compareParsersOnFixture,
@@ -10,7 +14,6 @@ import {
   importFigBytes,
   importZipBytes,
   inspectReactWithPlaywright,
-  loginFigmaReader,
   openFigmaBrowser,
   refreshFigmaDesign,
   runGeminiAiComparison,
@@ -20,11 +23,15 @@ import {
   syncFigmaDesign,
   updateFigmaSessionStatus,
 } from '../../integrations/figma/figma-connector-client.mjs';
-import { buildLocalDeterministicAiFallback } from '../../comparison/ai-engine/gemini-comparison.mjs';
+import {
+  GEMINI_MODEL_CASCADE,
+  buildLocalDeterministicAiFallback,
+} from '../../comparison/ai-engine/gemini-comparison.mjs';
 import { importFigmaExportZip, importJsonObject } from '../../lib/import-design.mjs';
 import { buildClientReport, generateJsonReport } from '../../lib/client-report.mjs';
 import { matchSelectedPair } from '../../lib/match-nodes.mjs';
 import { getScenarioById } from '../../inspection/storybook/storybook-scenarios.mjs';
+import { SplashScreen } from '../../components/SplashScreen.jsx';
 import { FigmaSourcePanel } from '../components/FigmaSourcePanel.jsx';
 import { DesignExplorerPanel } from '../components/DesignExplorerPanel.jsx';
 import { ReactImplementationPanel } from '../components/ReactImplementationPanel.jsx';
@@ -51,6 +58,9 @@ export function copiedActual(ref) {
 }
 
 export function DashboardPage() {
+  const [activePage, setActivePage] = useState(() =>
+    typeof window !== 'undefined' && window.location.hash === '#settings' ? 'settings' : 'main'
+  );
   const [ref, setRef] = useState(null);
   const [actual, setActual] = useState(null);
   const [statusMessage, setStatusMessage] = useState('جارٍ تهيئة محرك مطابقة Figma والتأكد من جاهزية figma-reader...');
@@ -65,7 +75,7 @@ export function DashboardPage() {
     message: 'جارٍ فحص حالة figma-reader...',
     auditLogs: [],
   });
-  const [syncProgress, setSyncProgress] = useState('جاهز للمزامنة المباشرة عبر figma-reader');
+  const [syncProgress, setSyncProgress] = useState('جاهز للإرسال والمطابقة واستخراج النتائج');
   const [hierarchy, setHierarchy] = useState({ pages: [], frames: [], components: [], allNodes: [] });
   const [nodes, setNodes] = useState([]);
   const [selectedNodeId, setSelectedNodeId] = useState('');
@@ -82,18 +92,27 @@ export function DashboardPage() {
   const [preferredAiModel, setPreferredAiModel] = useState('gemini-flash-latest');
   const [aiComparison, setAiComparison] = useState(null);
   const [aiBusy, setAiBusy] = useState(false);
+  const authMutationSeq = React.useRef(0);
+
+  function switchPage(nextPage) {
+    setActivePage(nextPage);
+    if (typeof window !== 'undefined' && window.history?.replaceState) {
+      window.history.replaceState(null, '', nextPage === 'settings' ? '#settings' : '#main');
+    }
+  }
 
   useEffect(() => {
     let stop = false;
     fetchLastSync()
       .then(saved => {
         if (stop || !saved?.ref) throw new Error('empty');
-        setRef(saved.ref);
+        const imgUrl = saved.previewUrl || saved.ref?.previewUrl || buildFigmaDesignImageDataUrl(saved.ref);
+        setRef({ ...saved.ref, previewUrl: imgUrl, figmaImageUrl: imgUrl });
         setActual(demoActual(saved.ref));
         setNodes(saved.index || []);
-        setPreviewUrl(saved.previewUrl || '');
+        setPreviewUrl(imgUrl);
         if (saved.change?.summary) setChangeNote(saved.change.summary);
-        setStatusMessage(`عُرضت آخر مزامنة محفوظة محليًا${saved.savedAt ? ` (${saved.savedAt})` : ''}.`);
+        setStatusMessage(`عُرضت آخر مزامنة محفوظة محليًا وتم جلب صورة تصميم فيجما${saved.savedAt ? ` (${saved.savedAt})` : ''}.`);
       })
       .catch(() =>
         fetch('/reference.json', { cache: 'no-store' })
@@ -103,9 +122,11 @@ export function DashboardPage() {
           })
           .then(data => {
             if (stop) return;
-            setRef(data);
+            const imgUrl = data?.previewUrl || buildFigmaDesignImageDataUrl(data);
+            setRef({ ...data, previewUrl: imgUrl, figmaImageUrl: imgUrl });
             setActual(demoActual(data));
-            setStatusMessage('تم تحميل المرجع الأولي. يمكنك المزامنة المباشرة عبر figma-reader من أي رابط Figma مصرح به.');
+            setPreviewUrl(imgUrl);
+            setStatusMessage('تم تحميل بيانات وصورة تصميم فيجما المرجعية. أدخل الرابط واضغط «إرسال ومطابقة واستخراج النتائج والمقارنة».');
           })
           .catch(error => {
             if (!stop) setStatusMessage(error.message);
@@ -133,12 +154,15 @@ export function DashboardPage() {
   useEffect(() => {
     let stop = false;
     const pollStatus = () => {
+      const seqAtStart = authMutationSeq.current;
       fetchFigmaReaderStatus()
         .then(status => {
-          if (!stop) setReaderStatus(status);
+          if (!stop && authMutationSeq.current === seqAtStart) {
+            setReaderStatus(status);
+          }
         })
         .catch(() => {
-          if (!stop) {
+          if (!stop && authMutationSeq.current === seqAtStart) {
             setReaderStatus(prev => ({
               ...prev,
               state: 'disconnected',
@@ -189,6 +213,7 @@ export function DashboardPage() {
   }
 
   async function handleToggleAuthSession(nextLoggedIn) {
+    authMutationSeq.current += 1;
     setBusy(true);
     try {
       const updated = await updateFigmaSessionStatus({
@@ -226,19 +251,19 @@ export function DashboardPage() {
     }
   }
 
-  async function handleRunGeminiCompare() {
-    if (!ref || !actual) return;
+  async function handleRunGeminiCompare(customRef = ref, customActual = actual) {
+    if (!customRef || !customActual) return;
     setAiBusy(true);
     try {
       const res = await runGeminiAiComparison({
-        reference: ref,
-        actual,
+        reference: customRef,
+        actual: customActual,
         visual,
         preferredModel: preferredAiModel,
       });
       setAiComparison(res);
       setStatusMessage(
-        `اكتملت المقارنة الذكية عبر ${res.usedModel || preferredAiModel}: الدرجة الذكية ${res.aiScore}% (${res.verdict}).`
+        `اكتملت المقارنة الذكية وتفسير النسب بالمارك داون عبر ${res.usedModel || preferredAiModel}: الدرجة الذكية ${res.aiScore}% (${res.verdict}).`
       );
     } catch (error) {
       setStatusMessage(error.message);
@@ -295,47 +320,90 @@ export function DashboardPage() {
     }
   }
 
-  async function handleSyncFromFigma(refresh = false) {
+  /**
+   * Unified Single-Button Workflow:
+   * 1. Parses the Figma URL
+   * 2. Syncs & extracts Figma design data
+   * 3. Fetches/renders the Figma design image
+   * 4. Compares Current Design vs Figma Design data
+   * 5. Runs Gemini AI comparison to explain percentage reasons in full Markdown
+   */
+  async function handleUnifiedSendAndCompare(refresh = false) {
     setBusy(true);
     setChangeNote('');
     setSyncProgress(
       refresh
-        ? 'جارٍ تحديث لقطة التصميم من Figma عبر figma-reader (--refresh)...'
-        : 'جارٍ التحقق من الرابط وجلب التصميم عبر figma-reader...'
+        ? 'جارٍ تحديث بيانات وصورة تصميم فيجما وإعادة المقارنة...'
+        : 'جارٍ إرسال الرابط وجلب صورة وبيانات تصميم فيجما وإجراء المقارنة الذكية...'
     );
     try {
       const parsed = parseFigmaUrl(figmaUrl);
       setUrlInfo(parsed);
+      const requestedNodeId = parsed.nodeId || '0:1';
       const synced = refresh
         ? await refreshFigmaDesign({
             url: figmaUrl,
-            nodeId: selectedNodeId || parsed.nodeId || null,
+            nodeId: requestedNodeId,
             allowDevFallback: true,
           })
         : await syncFigmaDesign({
             url: figmaUrl,
             refresh: false,
-            nodeId: selectedNodeId || parsed.nodeId || null,
+            nodeId: requestedNodeId,
+            captureImage: true,
             openBrowserOnAuthRequired: false,
             allowDevFallback: true,
           });
-      setRef(synced.ref);
-      setActual(copiedActual(synced.ref));
-      setSelectedScenarioId('ExactMatch');
-      setSelectedNodeId(synced.selectedNodeId || '');
+
+      const resolvedRef =
+        synced.ref && synced.ref.nodeId === requestedNodeId
+          ? {
+              ...synced.ref,
+              fileKey: parsed.fileKey || synced.ref.fileKey,
+              fileName: parsed.fileName || synced.ref.fileName,
+              extractedUrl: figmaUrl.trim(),
+            }
+          : resolveUrlDesignNode(figmaUrl, {
+              nodeId: requestedNodeId,
+              baseRef: synced.ref,
+            });
+
+      const imgUrl =
+        synced.ref?.previewSource === 'figma-reader-screenshot' && synced.previewUrl
+          ? `${synced.previewUrl}?t=${Date.now()}`
+          : buildFigmaDesignImageDataUrl(resolvedRef);
+
+      const enrichedRef = {
+        ...resolvedRef,
+        previewUrl: imgUrl,
+        figmaImageUrl: imgUrl,
+        syncedAt: synced.syncedAt || new Date().toISOString(),
+      };
+      const nodeChanged =
+        !actual ||
+        enrichedRef.nodeId !== ref?.nodeId ||
+        enrichedRef.fileKey !== ref?.fileKey ||
+        enrichedRef.fileName !== ref?.fileName;
+      const nextActual = nodeChanged ? demoActual(enrichedRef) : actual;
+
+      setRef(enrichedRef);
+      setActual(nextActual);
+      setPreviewUrl(imgUrl);
+      setSelectedNodeId(enrichedRef.nodeId || synced.selectedNodeId || '');
       if (synced.hierarchy) setHierarchy(synced.hierarchy);
       if (synced.index) setNodes(synced.index);
-      if (synced.ref?.previewUrl) setPreviewUrl(synced.ref.previewUrl);
       if (synced.change?.summary) setChangeNote(synced.change.summary);
-      setSyncProgress(`اكتملت المزامنة بنجاح (${synced.syncedAt})`);
+
+      setSyncProgress(`تم جلب صورة وبيانات فيجما واستخراج المقارنة (${enrichedRef.syncedAt})`);
       setStatusMessage(
-        synced.usedDevFallback
-          ? `تمت مزامنة العقدة ${synced.selectedNodeId} (${synced.ref?.nodeName}) عبر ${synced.adapter} في وضع التطوير المحلي فوراً — ويمكنك فتح المتصفح لتسجيل الدخول لحسابك السحابي متى شئت.`
-          : `تمت مزامنة العقدة ${synced.selectedNodeId} (${synced.ref?.nodeName}) عبر ${synced.adapter}.`
+        `تم إرسال الرابط وجلب صورة وبيانات تصميم فيجما للعقدة ${enrichedRef.nodeId} (${enrichedRef.nodeName}) ومقارنتها بالتصميم الحالي.`
       );
       fetchFigmaReaderStatus().then(setReaderStatus).catch(() => {});
+
+      // Trigger AI comparison in parallel to update full Markdown report & percentage reasons
+      handleRunGeminiCompare(enrichedRef, nextActual);
     } catch (error) {
-      setSyncProgress(`توقفت المزامنة: ${error.code || 'يتطلب إجراء'}`);
+      setSyncProgress(`توقفت العملية: ${error.code || 'تحقق من الرابط'}`);
       setStatusMessage(`${error.message} ${error.recovery || ''}`);
       fetchFigmaReaderStatus().then(setReaderStatus).catch(() => {});
     } finally {
@@ -353,8 +421,11 @@ export function DashboardPage() {
         nodeId: selectedNodeId || '942:2734',
         refresh: false,
       });
-      setRef(synced.ref);
-      setActual(copiedActual(synced.ref));
+      const imgUrl = synced.previewUrl || synced.ref?.previewUrl || buildFigmaDesignImageDataUrl(synced.ref);
+      const enrichedRef = { ...synced.ref, previewUrl: imgUrl, figmaImageUrl: imgUrl };
+      setRef(enrichedRef);
+      setActual(copiedActual(enrichedRef));
+      setPreviewUrl(imgUrl);
       setSelectedScenarioId('ExactMatch');
       setSelectedNodeId(synced.selectedNodeId || '942:2734');
       if (synced.hierarchy) setHierarchy(synced.hierarchy);
@@ -378,16 +449,19 @@ export function DashboardPage() {
     setSelectedNodeId(nodeId);
     if (!nodeId) return;
     setBusy(true);
-    setSyncProgress(`جارٍ جلب خصائص العقدة ${nodeId} عبر figma-reader...`);
+    setSyncProgress(`جارٍ جلب خصائص وصورة العقدة ${nodeId} عبر figma-reader...`);
     try {
       const res = await fetchFigmaNode(nodeId);
       if (res?.ref) {
-        setRef(res.ref);
-        setActual(copiedActual(res.ref));
+        const imgUrl = res.previewUrl || res.ref?.previewUrl || buildFigmaDesignImageDataUrl(res.ref);
+        const enrichedRef = { ...res.ref, previewUrl: imgUrl, figmaImageUrl: imgUrl };
+        setRef(enrichedRef);
+        setActual(copiedActual(enrichedRef));
+        setPreviewUrl(imgUrl);
         setSelectedScenarioId('ExactMatch');
         if (res.change?.summary) setChangeNote(res.change.summary);
         setSyncProgress(`تم تحميل العقدة ${res.nodeId}`);
-        setStatusMessage(`تم اختيار العقدة ${res.ref.nodeName} (${res.nodeId}) وتحديث جدول المقارنة.`);
+        setStatusMessage(`تم اختيار العقدة ${res.ref.nodeName} (${res.nodeId}) وتحديث صورة وجدول المقارنة.`);
       }
     } catch (error) {
       setStatusMessage(error.message);
@@ -468,8 +542,10 @@ export function DashboardPage() {
       const name = file.name.toLowerCase();
       if (name.endsWith('.fig')) {
         const imported = await importFigBytes(await file.arrayBuffer(), { nodeId: parsed?.nodeId || '' });
-        setRef(imported.ref);
+        const imgUrl = buildFigmaDesignImageDataUrl(imported.ref);
+        setRef({ ...imported.ref, previewUrl: imgUrl, figmaImageUrl: imgUrl });
         setActual(copiedActual(imported.ref));
+        setPreviewUrl(imgUrl);
         setNodes(imported.index || []);
         setStatusMessage(`قُرئ ملف .fig احتياطيًا عبر OpenFig Core (${file.name}).`);
       } else if (name.endsWith('.zip')) {
@@ -485,18 +561,21 @@ export function DashboardPage() {
             nodeId: parsed?.nodeId || null,
           });
         }
-        setRef(imported.ref);
+        const imgUrl = imported.previewUrl || buildFigmaDesignImageDataUrl(imported.ref);
+        setRef({ ...imported.ref, previewUrl: imgUrl, figmaImageUrl: imgUrl });
         setActual(copiedActual(imported.ref));
         setNodes(imported.index || []);
-        setPreviewUrl(imported.previewUrl || '');
+        setPreviewUrl(imgUrl);
         setStatusMessage(`تم استيراد حزمة ZIP القديمة (OPTIONAL / LEGACY): ${file.name}.`);
       } else if (name.endsWith('.json')) {
         const imported = importJsonObject(JSON.parse(await file.text()), {
           nodeId: parsed?.nodeId || null,
           fileName: file.name,
         });
-        setRef(imported.ref);
+        const imgUrl = buildFigmaDesignImageDataUrl(imported.ref);
+        setRef({ ...imported.ref, previewUrl: imgUrl, figmaImageUrl: imgUrl });
         setActual(copiedActual(imported.ref));
+        setPreviewUrl(imgUrl);
         setNodes(imported.index || []);
         setStatusMessage(`تم استيراد ملف JSON محليًا: ${file.name}.`);
       } else {
@@ -603,104 +682,261 @@ export function DashboardPage() {
 
   return (
     <div className="app">
+      <SplashScreen
+        refNode={ref}
+        actualNode={actual}
+        comparison={comparison}
+        readerStatus={readerStatus}
+        preferredAiModel={preferredAiModel}
+      />
+      {/* Top Header with Main Comparison View vs Separate Settings Page Navigation */}
       <header className="app-header">
         <div>
-          <div className="eyebrow">7-TOOL ARCHITECTURE • PRIMARY: @LEOGCODE/FIGMA-READER • NO REST API</div>
-          <h1>محرك مطابقة تصميم Figma مع مكوّنات React</h1>
+          <div className="eyebrow">FIGMA-TO-REACT FIDELITY &amp; AI MARKDOWN AUDITOR</div>
+          <h1>محرك مطابقة تصميم Figma مع التصميم الحالي بالذكاء الاصطناعي</h1>
           <p>
-            معمارية محلية متكاملة تجمع بين <code dir="ltr">figma-reader</code> (أساسي)، و<code dir="ltr">OpenFig Core</code> (احتياطي)، و<code dir="ltr">Storybook</code>، و<code dir="ltr">Playwright</code>، و<code dir="ltr">Pixelmatch</code>، و<code dir="ltr">reg-cli</code> دون إرسال أي بيانات تصميم خارج الجهاز.
+            أدخل رابط فيجما واضغط على زر الإرسال والمطابقة لاستخراج صورة تصميم فيجما، وجدول مقارنة البيانات، وتفسير أسباب النسب المئوية بالمارك داون الكامل.
           </p>
         </div>
-      </header>
 
-      <FigmaSourcePanel
-        figmaUrl={figmaUrl}
-        setFigmaUrl={setFigmaUrl}
-        urlInfo={urlInfo}
-        readerStatus={readerStatus}
-        syncProgress={syncProgress}
-        busy={busy}
-        refNode={ref}
-        changeNote={changeNote}
-        onParseUrl={handleParseUrl}
-        onSyncFromFigma={handleSyncFromFigma}
-        onRefreshDesign={() => handleSyncFromFigma(true)}
-        onLoginFigmaReader={handleLoginFigmaReader}
-        onOpenFigmaAccount={handleOpenFigmaAccount}
-        onOpenCurrentUrlInBrowser={handleOpenCurrentUrlInBrowser}
-        onToggleAuthSession={handleToggleAuthSession}
-        onRefreshAuthStatus={handleRefreshAuthStatus}
-        onSyncLocalFixture={handleSyncLocalFixture}
-        onImportLocalFile={handleImportLocalFile}
-      />
+        <nav className="page-nav-tabs" aria-label="التنقل بين صفحة المطابقة وصفحة الإعدادات">
+          <button
+            type="button"
+            className={`nav-tab-btn ${activePage === 'main' ? 'active' : ''}`}
+            data-testid="nav-main-page"
+            onClick={() => switchPage('main')}
+          >
+            الرئيسية: المطابقة والنتائج
+          </button>
+          <button
+            type="button"
+            className={`nav-tab-btn ${activePage === 'settings' ? 'active' : ''}`}
+            data-testid="nav-settings-page"
+            onClick={() => switchPage('settings')}
+          >
+            صفحة الإعدادات ⚙️
+          </button>
+        </nav>
+      </header>
 
       <p className="notice" role="status" data-testid="status-banner">
         {statusMessage}
         {auditedAt ? ` | وقت التدقيق: ${auditedAt}` : ''}
       </p>
 
-      <DesignExplorerPanel
-        hierarchy={hierarchy}
-        nodes={nodes}
-        selectedNodeId={selectedNodeId}
-        onSelectNode={handleSelectExplorerNode}
-        refNode={ref}
-        parserComparison={parserComparison}
-        onCompareParsers={handleCompareParsers}
-        busy={busy}
-      />
+      {/* MAIN PAGE: Ultra-clean URL Input + Single Action Button + Results */}
+      <div
+        className={activePage === 'main' ? 'main-page-view is-active' : 'main-page-view is-docked'}
+        data-testid="main-page-container"
+      >
+        <FigmaSourcePanel
+          figmaUrl={figmaUrl}
+          setFigmaUrl={setFigmaUrl}
+          readerStatus={readerStatus}
+          syncProgress={syncProgress}
+          busy={busy}
+          aiBusy={aiBusy}
+          changeNote={changeNote}
+          onUnifiedSendAndCompare={() => handleUnifiedSendAndCompare(false)}
+          onLoginFigmaReader={handleLoginFigmaReader}
+          onOpenFigmaAccount={handleOpenFigmaAccount}
+          onOpenCurrentUrlInBrowser={handleOpenCurrentUrlInBrowser}
+          onToggleAuthSession={handleToggleAuthSession}
+          onRefreshAuthStatus={handleRefreshAuthStatus}
+          onOpenSettingsPage={() => switchPage('settings')}
+        />
 
-      <ReactImplementationPanel
-        refNode={ref}
-        actual={actual}
-        setActual={setActual}
-        previewUrl={previewUrl}
-        selectedScenarioId={selectedScenarioId}
-        onSelectScenario={handleSelectScenario}
-        playwrightInspection={playwrightInspection}
-        onRunPlaywrightInspection={handleRunPlaywrightInspection}
-        onResetDemoMismatch={() => {
-          setSelectedScenarioId('IncorrectWidth');
-          setActual(demoActual(ref));
-        }}
-        onMakeExactMatch={() => {
-          setSelectedScenarioId('ExactMatch');
-          setActual(copiedActual(ref));
-        }}
-        busy={busy}
-      />
+        <ComparisonDashboardPanel
+          comparison={comparison}
+          genuineVisual={genuineVisual}
+          visual={visual}
+          refNode={ref}
+          actual={actual}
+          previewUrl={previewUrl}
+          aiComparison={effectiveAiComparison}
+          aiBusy={aiBusy}
+          preferredAiModel={preferredAiModel}
+          onRunGeminiCompare={() => handleRunGeminiCompare(ref, actual)}
+          onRunVisualCompare={handleVisualCompare}
+          onPrintReport={() => window.print()}
+          onOpenSettingsPage={() => switchPage('settings')}
+          reportHref={reportHref}
+          busy={busy}
+        />
+      </div>
 
-      <ComparisonDashboardPanel
-        comparison={comparison}
-        genuineVisual={genuineVisual}
-        visual={visual}
-        refNode={ref}
-        aiComparison={effectiveAiComparison}
-        aiBusy={aiBusy}
-        preferredAiModel={preferredAiModel}
-        setPreferredAiModel={setPreferredAiModel}
-        onRunGeminiCompare={handleRunGeminiCompare}
-        onRunVisualCompare={handleVisualCompare}
-        onPrintReport={() => window.print()}
-        reportHref={reportHref}
-        busy={busy}
-      />
+      {/* SEPARATE SETTINGS PAGE: Houses all advanced tools, diagnostics, Storybook, Explorer, and Reports */}
+      <div
+        className={activePage === 'settings' ? 'settings-page-view is-active' : 'settings-page-view is-docked'}
+        data-testid="settings-page-container"
+        aria-label="صفحة الإعدادات والأدوات المتقدمة"
+      >
+        <div className="panel settings-header-banner">
+          <div className="panel-head" style={{ marginBottom: 0 }}>
+            <div>
+              <h2>⚙️ صفحة الإعدادات والأدوات المتقدمة (Settings &amp; Diagnostics)</h2>
+              <span>
+                تم نقل جميع أدوات الفحص الفرعية، وسيناريوهات Storybook، ومستكشف الشجرة، وإعدادات النماذج والتقارير إلى هذه الصفحة المنفصلة لتقليل الازدحام في الصفحة الرئيسية.
+              </span>
+            </div>
+            <button
+              type="button"
+              className="btn btn-primary"
+              data-testid="back-to-main-page-btn"
+              onClick={() => switchPage('main')}
+            >
+              العودة إلى صفحة المطابقة والنتائج ←
+            </button>
+          </div>
+        </div>
 
-      <ReportsAuditPanel
-        visual={visual}
-        reportRecord={reportRecord}
-        reportHref={reportHref}
-        auditLogs={readerStatus?.auditLogs || []}
-        onGenerateHtmlReport={handleGenerateHtmlReport}
-        onDownloadJsonReport={handleDownloadJsonReport}
-        onPrintPdfReport={() => window.print()}
-        busy={busy}
-      />
+        {/* Settings Card 1: Advanced URL & Local Source Controls + AI Model Selector */}
+        <article className="panel" data-testid="settings-source-and-ai-card" style={{ margin: '18px 0' }}>
+          <div className="panel-head">
+            <div>
+              <h2>1. إعدادات المصدر المحلي ونموذج الذكاء الاصطناعي والمقارنة البصرية</h2>
+              <span>أدوات تحليل الرابط، واستيراد الملفات المحلية (.fig / .zip / .json)، واختيار نموذج Gemini</span>
+            </div>
+          </div>
+
+          <div className="settings-actions-grid">
+            <button
+              type="button"
+              className="btn btn-secondary"
+              data-testid="parse-url-btn"
+              onClick={handleParseUrl}
+              disabled={busy}
+            >
+              تحليل الرابط الحالي
+            </button>
+            <button
+              type="button"
+              className="btn btn-outline"
+              data-testid="refresh-figma-btn"
+              onClick={() => handleUnifiedSendAndCompare(true)}
+              disabled={busy}
+            >
+              تحديث لقطة التصميم (--refresh)
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              data-testid="sync-local-fixture-btn"
+              onClick={handleSyncLocalFixture}
+              disabled={busy}
+            >
+              📦 مزامنة ملف .fig المرجعي عبر figma-reader
+            </button>
+            <label className="upload-button">
+              📂 استيراد ملف محلي (.fig / .zip / .json)
+              <input
+                aria-label="استيراد JSON أو ZIP أو FIG"
+                type="file"
+                accept=".json,.zip,.fig,application/json,application/zip"
+                onChange={handleImportLocalFile}
+              />
+            </label>
+            <label className="settings-inline-label">
+              نموذج Gemini AI:{' '}
+              <select
+                aria-label="نموذج Gemini AI"
+                data-testid="gemini-model-select"
+                value={preferredAiModel}
+                onChange={e => setPreferredAiModel(e.target.value)}
+                className="model-select"
+                dir="ltr"
+              >
+                {GEMINI_MODEL_CASCADE.map(m => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => handleVisualCompare(false)}
+              disabled={busy}
+            >
+              تشغيل المقارنة البصرية (Pixelmatch)
+            </button>
+            <button
+              type="button"
+              className="btn btn-outline"
+              onClick={() => handleVisualCompare(true)}
+              disabled={busy}
+            >
+              مقارنة بصرية تجريبية (--demo)
+            </button>
+          </div>
+
+          {urlInfo && (
+            <div className="diagnostic-box compact-box" data-testid="parsed-url-info">
+              <strong>نتيجة تحليل الرابط:</strong> مفتاح الملف:{' '}
+              <code dir="ltr">{urlInfo.fileKey}</code> | معرّف العقدة:{' '}
+              <code dir="ltr">{urlInfo.nodeId || 'غير محدد'}</code> | البروتوكول:{' '}
+              <code dir="ltr">{urlInfo.isHttpDev ? 'HTTP (Development Mode)' : 'HTTPS'}</code> | النوع:{' '}
+              <code dir="ltr">{urlInfo.surface || 'design'}</code> | اسم الملف:{' '}
+              <code dir="ltr">{urlInfo.fileName || '—'}</code>
+            </div>
+          )}
+
+          <div className="diagnostic-box compact-box">
+            <strong>إصدار التصميم والطابع الزمني:</strong>{' '}
+            المصدر: <code dir="ltr">{ref?.source || '—'}</code> | الإصدار/التعديل:{' '}
+            <code dir="ltr">{ref?.sourceVersion || ref?.fileModifiedAt || ref?.exportedAt || 'نسخة محلية'}</code>{' '}
+            | وقت الاستحواذ: <code dir="ltr">{ref?.acquiredAt || '—'}</code>
+          </div>
+        </article>
+
+        {/* Settings Card 2: Storybook Scenarios & Playwright DOM Inspector */}
+        <ReactImplementationPanel
+          actual={actual}
+          setActual={setActual}
+          selectedScenarioId={selectedScenarioId}
+          onSelectScenario={handleSelectScenario}
+          playwrightInspection={playwrightInspection}
+          onRunPlaywrightInspection={handleRunPlaywrightInspection}
+          onResetDemoMismatch={() => {
+            setSelectedScenarioId('IncorrectWidth');
+            setActual(demoActual(ref));
+          }}
+          onMakeExactMatch={() => {
+            setSelectedScenarioId('ExactMatch');
+            setActual(copiedActual(ref));
+          }}
+          busy={busy}
+        />
+
+        {/* Settings Card 3: Design Explorer & Parser Comparison */}
+        <DesignExplorerPanel
+          hierarchy={hierarchy}
+          nodes={nodes}
+          selectedNodeId={selectedNodeId}
+          onSelectNode={handleSelectExplorerNode}
+          refNode={ref}
+          parserComparison={parserComparison}
+          onCompareParsers={handleCompareParsers}
+          busy={busy}
+        />
+
+        {/* Settings Card 4: Reports & Technical Audit Logs */}
+        <ReportsAuditPanel
+          visual={visual}
+          reportRecord={reportRecord}
+          reportHref={reportHref}
+          auditLogs={readerStatus?.auditLogs || []}
+          onGenerateHtmlReport={handleGenerateHtmlReport}
+          onDownloadJsonReport={handleDownloadJsonReport}
+          onPrintPdfReport={() => window.print()}
+          busy={busy}
+        />
+      </div>
 
       <footer>
-        المصدر الحالي: <code dir="ltr">{ref.source}</code> | الأداة الأساسية: <code dir="ltr">@leogcode/figma-reader@0.4.2</code> | Storybook على المنفذ 6006 | معالجة محلية 100% على <code dir="ltr">127.0.0.1</code>
+        المصدر الحالي: <code dir="ltr">{ref.source}</code> | الأداة الأساسية: <code dir="ltr">@leogcode/figma-reader@0.4.2</code> | الذكاء الاصطناعي: <code dir="ltr">{preferredAiModel}</code>
       </footer>
     </div>
   );
 }
-

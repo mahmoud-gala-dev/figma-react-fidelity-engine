@@ -105,6 +105,8 @@ export async function handleFigmaV2Routes({
         exportedAt: synced.exportedAt,
         fileModifiedAt: synced.fileModifiedAt,
         ref: synced.ref,
+        previewUrl: synced.previewUrl || synced.ref?.previewUrl || null,
+        figmaImageUrl: synced.figmaImageUrl || synced.ref?.figmaImageUrl || synced.ref?.previewUrl || null,
         index: synced.index,
         hierarchy: synced.hierarchy,
         change: synced.change,
@@ -121,6 +123,45 @@ export async function handleFigmaV2Routes({
         recovery: err.recovery || '',
         authStatus: err.authStatus || null,
       });
+    }
+    return true;
+  }
+
+  if (pathname === '/api/figma/design-image' && req.method === 'GET') {
+    allow('dashboard', 'local');
+    const requestedUrl = url.searchParams.get('url') || null;
+    const requestedNodeId = url.searchParams.get('nodeId') || null;
+    try {
+      let refNode = null;
+      if (requestedUrl) {
+        const synced = await orchestrator.sync({
+          url: requestedUrl,
+          nodeId: requestedNodeId,
+          captureImage: true,
+          allowDevFallback: true,
+        });
+        refNode = synced?.ref || null;
+      } else {
+        const nodeData = requestedNodeId
+          ? await orchestrator.getNode(requestedNodeId)
+          : (orchestrator.currentSync || await orchestrator.ensureDefaultDesignLoaded('942:2734'));
+        refNode = nodeData?.ref || orchestrator.currentSync?.ref || null;
+      }
+      const imageUrl = refNode?.figmaImageUrl || refNode?.previewUrl || null;
+      send(200, {
+        ok: true,
+        nodeId: refNode?.nodeId || '942:2734',
+        nodeName: refNode?.nodeName || 'DesignItem',
+        width: refNode?.width || 112,
+        height: refNode?.height || 100,
+        fileKey: refNode?.fileKey || null,
+        fileName: refNode?.fileName || null,
+        ref: refNode,
+        imageUrl,
+        previewUrl: imageUrl,
+      });
+    } catch (err) {
+      send(err.status || 422, { ok: false, error: err.message });
     }
     return true;
   }
@@ -168,6 +209,8 @@ export async function handleFigmaV2Routes({
         fileName: refreshed.fileName,
         selectedNodeId: refreshed.selectedNodeId,
         ref: refreshed.ref,
+        previewUrl: refreshed.previewUrl || refreshed.ref?.previewUrl || null,
+        figmaImageUrl: refreshed.figmaImageUrl || refreshed.ref?.figmaImageUrl || refreshed.ref?.previewUrl || null,
         index: refreshed.index,
         hierarchy: refreshed.hierarchy,
         change: refreshed.change,

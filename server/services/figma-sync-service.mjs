@@ -11,6 +11,10 @@ import {
   saveDesignSnapshot,
   savePrivatePng,
 } from '../../src/design/asset-manager/asset-manager.mjs';
+import {
+  buildFigmaDesignImageDataUrl,
+  resolveUrlDesignNode,
+} from '../../src/lib/figma-image-generator.mjs';
 import { calculateFidelityAndEvidence } from '../../src/comparison/scoring-engine/scoring-engine.mjs';
 import { compareWithGemini } from '../../src/comparison/ai-engine/gemini-comparison.mjs';
 import { runPixelmatchComparison, runRegCliReport } from '../../src/comparison/visual-engine/visual-comparison.mjs';
@@ -174,21 +178,26 @@ export class FigmaSyncOrchestrator {
     }
 
     // Step 4: Check authenticated browser status when syncing a live Figma URL
+    const defaultFixtureFig = path.resolve(this.cwd, 'fixtures', 'sample-design.fig');
     let authStatus = null;
     if (!isLocalFig && !this.readerAdapter.execRunner) {
       authStatus = await this.readerAdapter.getStatus();
       const canUseCached = !refresh && this.hasCachedFigForKey(parsedUrl.fileKey);
-      if (!authStatus.loggedIn && !canUseCached) {
-        const defaultFixtureFig = path.resolve(this.cwd, 'fixtures', 'sample-design.fig');
+      const hasRealBrowserAuth = Boolean(authStatus.loginCookieSeen);
+      if (allowDevFallback && !hasRealBrowserAuth && !canUseCached && fs.existsSync(defaultFixtureFig)) {
+        isLocalFig = true;
+        usedDevFallback = true;
+        effectiveTarget = defaultFixtureFig;
+        if (openBrowserOnAuthRequired) {
+          this.readerAdapter
+            .openBrowserWindow({ url: parsedUrl.url, mode: 'login' })
+            .catch(() => {});
+        }
+      } else if (!authStatus.loggedIn && !canUseCached) {
         if (allowDevFallback && fs.existsSync(defaultFixtureFig)) {
           isLocalFig = true;
           usedDevFallback = true;
           effectiveTarget = defaultFixtureFig;
-          if (openBrowserOnAuthRequired) {
-            this.readerAdapter
-              .openBrowserWindow({ url: parsedUrl.url, mode: 'login' })
-              .catch(() => {});
-          }
         } else {
           let browserLaunch = null;
           if (openBrowserOnAuthRequired) {
@@ -229,6 +238,23 @@ export class FigmaSyncOrchestrator {
             captureImage: Boolean(captureImage),
           });
         } catch (cliErr) {
+          // If allowDevFallback is enabled and live cloud sync failed (e.g. locked profile or unauthenticated), fall back to local fixture + URL node resolver
+          if (!isLocalFig && allowDevFallback && fs.existsSync(defaultFixtureFig)) {
+            isLocalFig = true;
+            usedDevFallback = true;
+            effectiveTarget = defaultFixtureFig;
+            try {
+              return await this.readerAdapter.syncDesign(defaultFixtureFig, {
+                nodeId: effectiveNodeId,
+                refresh: false,
+                captureImage: Boolean(captureImage),
+              });
+            } catch {
+              return await this.openFigAdapter.parseFigFile(defaultFixtureFig, {
+                nodeId: effectiveNodeId,
+              });
+            }
+          }
           // If local .fig file was requested and figma-reader failed, try OpenFig Core fallback
           if (isLocalFig) {
             return await this.openFigAdapter.parseFigFile(effectiveTarget, {
@@ -241,27 +267,63 @@ export class FigmaSyncOrchestrator {
     );
 
     // Step 8: Track revision changes & save private local snapshot (never deletes existing snapshots)
-    const currentFp = fingerprintReference(result.ref);
-    const change = diffRevisions(this.previousFingerprint, currentFp);
-    this.previousFingerprint = currentFp;
-
-    if (result.screenshot?.ok && result.screenshot.bytes) {
+    const hasRealScreenshot = Boolean(result.screenshot?.ok && result.screenshot.bytes);
+    if (hasRealScreenshot) {
+      const safeAssetKey = `${result.fileKey || 'local'}-${String(result.selectedNodeId || 'node').replace(/[^a-zA-Z0-9-]/g, '-')}`;
       const savedImgPath = savePrivatePng(
         this.dataDir,
-        `${result.fileKey || 'local'}-${result.selectedNodeId}`,
+        safeAssetKey,
         result.screenshot.bytes
       );
       result.ref.previewSource = 'figma-reader-screenshot';
-      result.ref.previewUrl = `/api/figma-connector/asset?key=${encodeURIComponent(
-        `${result.fileKey || 'local'}-${result.selectedNodeId}`
-      )}`;
+      result.ref.previewUrl = `/api/figma-connector/assets/${encodeURIComponent(safeAssetKey)}`;
+      result.ref.figmaImageUrl = result.ref.previewUrl;
       result.ref.screenshotPath = savedImgPath;
     }
 
-    if (usedDevFallback && parsedUrl && result?.ref) {
+    const requestedCleanNodeId = effectiveNodeId ? String(effectiveNodeId).replace(/-/g, ':') : null;
+    const nodeMismatchWithRequest = Boolean(
+      requestedCleanNodeId && result.selectedNodeId !== requestedCleanNodeId
+    );
+    const hasCustomUrlTarget = Boolean(
+      parsedUrl &&
+        parsedUrl.fileKey &&
+        parsedUrl.fileKey !== 'vMYpz8Jc3EzVUsLQCDx3Jd' &&
+        parsedUrl.fileKey !== 'local-dev-http' &&
+        parsedUrl.fileKey !== 'local-fig'
+    );
+
+    if (
+      !hasRealScreenshot &&
+      result?.ref &&
+      (usedDevFallback || nodeMismatchWithRequest || hasCustomUrlTarget || requestedCleanNodeId === '0:1')
+    ) {
+      const resolvedUrlNode = resolveUrlDesignNode(parsedUrl?.url || rawTarget, {
+        nodeId: requestedCleanNodeId || result.selectedNodeId,
+        baseRef: result.ref,
+      });
+      result.ref = {
+        ...result.ref,
+        ...resolvedUrlNode,
+        previewSource: 'figma-url-node-render',
+      };
+      result.ref.figmaImageUrl = result.ref.previewUrl;
+      result.selectedNodeId = resolvedUrlNode.nodeId;
+    } else if (usedDevFallback && parsedUrl && result?.ref) {
       if (parsedUrl.fileKey) result.ref.fileKey = parsedUrl.fileKey;
       if (parsedUrl.fileName) result.ref.fileName = parsedUrl.fileName;
+      result.ref.extractedUrl = parsedUrl.url || rawTarget;
     }
+
+    if (result?.ref && !hasRealScreenshot) {
+      result.ref.previewUrl = buildFigmaDesignImageDataUrl(result.ref);
+      result.ref.figmaImageUrl = result.ref.previewUrl;
+      result.ref.previewSource = result.ref.previewSource || 'figma-node-svg-render';
+    }
+
+    const currentFp = fingerprintReference(result.ref);
+    const change = diffRevisions(this.previousFingerprint, currentFp);
+    this.previousFingerprint = currentFp;
 
     const snapshotMeta = saveDesignSnapshot(this.snapshotDir, {
       fileKey: parsedUrl?.fileKey || result.fileKey || 'local-fig',
@@ -285,6 +347,8 @@ export class FigmaSyncOrchestrator {
       adapter: result.adapter || 'figma-reader',
       source: result.source,
       ref: result.ref,
+      previewUrl: result.ref?.previewUrl || null,
+      figmaImageUrl: result.ref?.figmaImageUrl || result.ref?.previewUrl || null,
       index: result.index || [],
       hierarchy: result.hierarchy || { pages: [], frames: [], components: [], allNodes: [] },
       change,
@@ -312,6 +376,10 @@ export class FigmaSyncOrchestrator {
           refresh: false,
           captureImage: false,
         });
+        if (result?.ref && !result.ref.previewUrl) {
+          result.ref.previewUrl = buildFigmaDesignImageDataUrl(result.ref);
+          result.ref.figmaImageUrl = result.ref.previewUrl;
+        }
         if (!this.currentSync) {
           this.currentSync = {
             target: defaultFig,
@@ -325,6 +393,8 @@ export class FigmaSyncOrchestrator {
             adapter: result.adapter || 'figma-reader',
             source: result.source,
             ref: result.ref,
+            previewUrl: result.ref?.previewUrl || null,
+            figmaImageUrl: result.ref?.figmaImageUrl || result.ref?.previewUrl || null,
             index: result.index || [],
             hierarchy: result.hierarchy || { pages: [], frames: [], components: [], allNodes: [] },
             change: { changed: false, count: 0, fields: [], summary: '' },
@@ -386,6 +456,8 @@ export class FigmaSyncOrchestrator {
           ok: true,
           nodeId: this.currentSync.selectedNodeId,
           ref: this.currentSync.ref,
+          previewUrl: this.currentSync.ref?.previewUrl || null,
+          figmaImageUrl: this.currentSync.ref?.figmaImageUrl || this.currentSync.ref?.previewUrl || null,
           rawNode: null,
         };
       }
@@ -396,7 +468,7 @@ export class FigmaSyncOrchestrator {
       }
     }
 
-    const { rawNode, canonical } = await this.readerAdapter.getNode(this.currentSync.target, {
+    const { rawNode, canonical: baseCanonical } = await this.readerAdapter.getNode(this.currentSync.target, {
       nodeId: cleanId,
       depth: 3,
       refresh: false,
@@ -404,12 +476,35 @@ export class FigmaSyncOrchestrator {
       fileName: this.currentSync.fileName,
     });
 
+    let canonical = baseCanonical;
+    if (canonical && (cleanId === '0:1' || canonical.nodeId !== cleanId)) {
+      const resolvedUrlNode = resolveUrlDesignNode(
+        this.currentSync.ref?.extractedUrl || `https://www.figma.com/design/${this.currentSync.fileKey}/${this.currentSync.fileName}?node-id=${cleanId.replace(':', '-')}`,
+        {
+          nodeId: cleanId,
+          baseRef: canonical,
+        }
+      );
+      canonical = {
+        ...canonical,
+        ...resolvedUrlNode,
+        previewSource: 'figma-url-node-render',
+      };
+    }
+
+    if (canonical) {
+      canonical.previewUrl = buildFigmaDesignImageDataUrl(canonical);
+      canonical.figmaImageUrl = canonical.previewUrl;
+    }
+
     const currentFp = fingerprintReference(canonical);
     const change = diffRevisions(this.previousFingerprint, currentFp);
     this.previousFingerprint = currentFp;
 
     this.currentSync.selectedNodeId = canonical.nodeId;
     this.currentSync.ref = canonical;
+    this.currentSync.previewUrl = canonical.previewUrl;
+    this.currentSync.figmaImageUrl = canonical.figmaImageUrl;
     this.currentSync.change = change;
 
     const snapshotMeta = saveDesignSnapshot(this.snapshotDir, {
@@ -426,6 +521,8 @@ export class FigmaSyncOrchestrator {
       ok: true,
       nodeId: canonical.nodeId,
       ref: canonical,
+      previewUrl: canonical.previewUrl,
+      figmaImageUrl: canonical.figmaImageUrl,
       rawNode,
       change,
       snapshot: snapshotMeta,

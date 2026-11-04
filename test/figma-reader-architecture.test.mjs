@@ -574,6 +574,12 @@ test('E2E Scenarios 1 to 8 — Complete API & Workflow Validation (Sync, Node Se
 });
 
 test('E2E Browser UI — React Dashboard renders all 5 sections, parses URL, syncs via figma-reader, and updates scores', async () => {
+  await fetch('http://127.0.0.1:5173/api/figma/session', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ loggedIn: false }),
+  }).catch(() => {});
+
   const { chromium } = await import('playwright');
   const browser = await chromium.launch({ headless: true });
   try {
@@ -733,6 +739,12 @@ test('Unit & API — Full percentage breakdown, Gemini AI comparison engine, and
 });
 
 test('E2E Browser UI — Conditional login button hiding on loggedIn state, full percentage metrics, and Gemini AI comparison', async () => {
+  await fetch('http://127.0.0.1:5173/api/figma/session', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ loggedIn: false }),
+  }).catch(() => {});
+
   const { chromium } = await import('playwright');
   const browser = await chromium.launch({ headless: true });
   try {
@@ -775,5 +787,263 @@ test('E2E Browser UI — Conditional login button hiding on loggedIn state, full
     await browser.close();
   }
 });
+
+test('Unit & API — Figma design image generator, dynamic URL node resolution, AI percentage reasons, full Markdown report, and edge cases', async () => {
+  const {
+    buildFigmaDesignImageSvg,
+    buildFigmaDesignImageDataUrl,
+    resolveUrlDesignNode,
+  } = await import('../src/lib/figma-image-generator.mjs');
+  const { compareSpecs } = await import('../src/lib/compare.mjs');
+  const {
+    buildLocalDeterministicAiFallback,
+  } = await import('../src/comparison/ai-engine/gemini-comparison.mjs');
+
+  // 1. Edge cases for buildFigmaDesignImageSvg (empty object, special XML chars, dark background)
+  const emptySvg = buildFigmaDesignImageSvg({});
+  assert.ok(emptySvg.includes('<svg'), 'Empty node must still produce valid SVG');
+  assert.ok(emptySvg.includes('112 × 100'), 'Default dimensions 112x100 must be rendered');
+
+  const specialSvg = buildFigmaDesignImageSvg({
+    nodeName: 'Card <Primary> & "Hero"',
+    nodeId: '10:20',
+    width: 240,
+    height: 80,
+    backgroundColor: '#1E293B',
+    text: 'Click <Now> & Save',
+  });
+  assert.ok(specialSvg.includes('&lt;Primary&gt; &amp; &quot;Hero&quot;'), 'Must escape XML characters');
+  assert.ok(specialSvg.includes('fill="#FFFFFF"'), 'Dark background must use contrasting white text');
+
+  const dataUrl = buildFigmaDesignImageDataUrl({ nodeName: 'TestNode', width: 150, height: 60 });
+  assert.ok(dataUrl.startsWith('data:image/svg+xml;utf8,'), 'Must return valid SVG data URL');
+
+  // 2. Dynamic URL node resolution (node-id=0-1, node-id=1-2, custom fileKey/nodeId)
+  const pageNode = resolveUrlDesignNode(
+    'https://www.figma.com/design/vMYpz8Jc3EzVUsLQCDx3Jd/essam-qutb-s-team-library?node-id=0-1&p=f&t=mb24dKflvSkdj3ye-0'
+  );
+  assert.equal(pageNode.nodeId, '0:1');
+  assert.equal(pageNode.nodeType, 'PAGE');
+  assert.equal(pageNode.width, 296);
+  assert.equal(pageNode.height, 140);
+  assert.ok(Array.isArray(pageNode.childNodes) && pageNode.childNodes.length === 2);
+  assert.ok(decodeURIComponent(pageNode.previewUrl).includes('296 × 140'));
+
+  const customUrlNode = resolveUrlDesignNode(
+    'https://www.figma.com/design/AbCdEf123456/Mobile-Checkout-Flow?node-id=45-88'
+  );
+  assert.equal(customUrlNode.nodeId, '45:88');
+  assert.equal(customUrlNode.fileKey, 'AbCdEf123456');
+  assert.equal(customUrlNode.fileName, 'Mobile-Checkout-Flow');
+  assert.notEqual(customUrlNode.previewUrl, pageNode.previewUrl);
+
+  // 3. Compare specs row percentageReason and weightShare + AI Markdown report
+  const refNode = {
+    nodeId: '942:2734',
+    nodeName: 'Buy ice cream',
+    width: 112,
+    height: 100,
+    backgroundColor: '#FF9A62',
+    borderRadius: 6,
+    text: 'Buy ice cream',
+  };
+  const currentDesign = {
+    width: 140,
+    height: 100,
+    backgroundColor: '#FF9A62',
+    borderRadius: 6,
+    text: 'Buy ice cream',
+  };
+  const comp = compareSpecs(refNode, currentDesign);
+  const widthRow = comp.rows.find(r => r.key === 'width');
+  const bgRow = comp.rows.find(r => r.key === 'backgroundColor');
+  assert.equal(widthRow.weightShare, 25);
+  assert.ok(widthRow.percentageReason.includes('80%'), 'Width mismatch row must explain 80% proximity and 25% weight');
+  assert.ok(bgRow.percentageReason.includes('100%'), 'Matched row must explain 100% match');
+
+  const aiFallback = buildLocalDeterministicAiFallback(refNode, currentDesign, comp);
+  assert.ok(aiFallback.percentageReasons.propertyFidelity.includes('75%'));
+  assert.ok(aiFallback.percentageReasons.continuousProximity.includes('95%'));
+  assert.ok(aiFallback.markdownReport.includes('# تقرير الذكاء الاصطناعي'));
+  assert.ok(aiFallback.markdownReport.includes('| الخاصية (Property) | بيانات تصميم فيجما (Figma) | بيانات التصميم الحالي (Current) |'));
+  assert.ok(aiFallback.markdownReport.includes('```css'));
+
+  // 4. API /api/figma/sync & /api/figma/design-image with manual loggedIn=true AND loggedIn=false
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'figma-img-api-'));
+  try {
+    const api = createLocalApi({ dataDir: tmpDir });
+    const imgRes = await invokeLocalApi(api, {
+      method: 'GET',
+      url: '/api/figma/design-image?nodeId=942:2734',
+    });
+    assert.equal(imgRes.status, 200);
+    assert.equal(imgRes.body.ok, true);
+    assert.ok(imgRes.body.imageUrl.startsWith('data:image/svg+xml') || imgRes.body.imageUrl.startsWith('/api/'));
+
+    // Toggle manual session loggedIn=true (reproducing the user's exact scenario) and sync URL with node-id=0-1
+    await invokeLocalApi(api, {
+      method: 'POST',
+      url: '/api/figma/session',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ loggedIn: true }),
+    });
+
+    const syncPage01Res = await invokeLocalApi(api, {
+      method: 'POST',
+      url: '/api/figma/sync',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        url: 'https://www.figma.com/design/vMYpz8Jc3EzVUsLQCDx3Jd/essam-qutb-s-team-library?node-id=0-1&p=f&t=mb24dKflvSkdj3ye-0',
+        allowDevFallback: true,
+        captureImage: true,
+      }),
+    });
+    assert.equal(syncPage01Res.status, 200, 'Must succeed with 200 even when manual loggedIn is true');
+    assert.equal(syncPage01Res.body.selectedNodeId, '0:1');
+    assert.equal(syncPage01Res.body.ref.nodeId, '0:1');
+    assert.equal(syncPage01Res.body.ref.width, 296);
+    assert.equal(syncPage01Res.body.ref.height, 140);
+    assert.notEqual(syncPage01Res.body.previewUrl, imgRes.body.imageUrl, 'Preview image must change when URL changes to node-id=0-1');
+
+    // Sync a custom Figma URL and verify image & node metadata dynamically change again
+    const syncCustomRes = await invokeLocalApi(api, {
+      method: 'POST',
+      url: '/api/figma/sync',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        url: 'https://www.figma.com/design/AbCdEf123456/Mobile-Checkout-Flow?node-id=45-88',
+        allowDevFallback: true,
+        captureImage: true,
+      }),
+    });
+    assert.equal(syncCustomRes.status, 200);
+    assert.equal(syncCustomRes.body.selectedNodeId, '45:88');
+    assert.equal(syncCustomRes.body.fileKey, 'AbCdEf123456');
+    assert.equal(syncCustomRes.body.fileName, 'Mobile-Checkout-Flow');
+    assert.notEqual(syncCustomRes.body.previewUrl, syncPage01Res.body.previewUrl);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('E2E Browser UI — Minimal URL input & unified button, dynamic Figma design image extraction across URL changes, Current vs Figma data table, Full Markdown AI reasons, and separate Settings page', async () => {
+  await fetch('http://127.0.0.1:5173/api/figma/session', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ loggedIn: false }),
+  }).catch(() => {});
+
+  const { chromium } = await import('playwright');
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 1050 } });
+    await page.goto('http://127.0.0.1:5173', { waitUntil: 'domcontentloaded' });
+
+    // 1. Verify Minimal URL Form on Main Page has ONLY 1 input and 1 unified submit button
+    const minimalForm = page.locator('[data-testid="minimal-url-form"]');
+    await minimalForm.waitFor();
+    assert.equal(await minimalForm.locator('input').count(), 1, 'Main form must have only 1 URL input');
+    assert.equal(await minimalForm.locator('button').count(), 1, 'Main form must have only 1 unified action button');
+    const unifiedBtnText = await page.locator('[data-testid="sync-figma-btn"]').textContent();
+    assert.match(unifiedBtnText, /إرسال ومطابقة واستخراج النتائج والمقارنة/);
+
+    // 2. Verify Figma Design Image is fetched and displayed alongside Current Design
+    const figmaImg = page.locator('[data-testid="figma-design-image"]');
+    await figmaImg.waitFor();
+    const initialImgSrc = await figmaImg.getAttribute('src');
+    assert.ok(initialImgSrc && (initialImgSrc.startsWith('data:image/svg+xml') || initialImgSrc.startsWith('/api/')), 'Figma design image must have a valid image src');
+
+    // 3. Verify Current Design Data vs Figma Design Data Table and AI Percentage Reasons
+    const comparisonTable = page.locator('[data-testid="current-vs-figma-table"]');
+    await comparisonTable.waitFor();
+    const tableText = await comparisonTable.textContent();
+    assert.ok(tableText.includes('بيانات تصميم فيجما'), 'Table must include Figma Design Data column');
+    assert.ok(tableText.includes('بيانات التصميم الحالي'), 'Table must include Current Design Data column');
+    assert.ok(tableText.includes('توضيح سبب النسبة بالذكاء الاصطناعي'), 'Table must include AI Percentage Reason column');
+
+    await page.locator('[data-testid="reason-property-fidelity"]').waitFor();
+    await page.locator('[data-testid="reason-continuous-proximity"]').waitFor();
+
+    // 4. Verify Full Markdown AI Rendering (headings, GFM tables, code blocks, and raw mode toggle)
+    const renderedMd = page.locator('[data-testid="gemini-markdown-rendered"]');
+    await renderedMd.waitFor();
+    assert.ok((await renderedMd.locator('table.md-table').count()) >= 1, 'Markdown report must render GFM tables');
+    assert.ok((await renderedMd.locator('.md-heading').count()) >= 3, 'Markdown report must render headings');
+    assert.ok((await renderedMd.locator('[data-testid="gemini-css-patch"]').count()) === 1, 'Markdown report must render CSS code block');
+
+    // Toggle to Raw Markdown and back to Rendered Markdown
+    await page.locator('[data-testid="toggle-markdown-mode-btn"]').click();
+    await page.locator('[data-testid="gemini-markdown-raw"]').waitFor();
+    await page.locator('[data-testid="toggle-markdown-mode-btn"]').click();
+    await page.locator('[data-testid="gemini-markdown-rendered"]').waitFor();
+
+    // 5. Verify switching to the separate Settings Page and back to Main Page
+    await page.locator('[data-testid="nav-settings-page"]').click();
+    const settingsContainer = page.locator('[data-testid="settings-page-container"]');
+    assert.match(await settingsContainer.getAttribute('class'), /is-active/);
+    assert.match(await page.locator('[data-testid="main-page-container"]').getAttribute('class'), /is-docked/);
+
+    await page.locator('[data-testid="back-to-main-page-btn"]').click();
+    assert.match(await page.locator('[data-testid="main-page-container"]').getAttribute('class'), /is-active/);
+
+    // 6. Test the unified Send, Match, Extract & Compare button with node-id=1-2
+    await page.locator('[data-testid="figma-url-input"]').fill(
+      'https://www.figma.com/design/vMYpz8Jc3EzVUsLQCDx3Jd/essam-qutb-s-team-library?node-id=1-2'
+    );
+    await page.locator('[data-testid="sync-figma-btn"]').click();
+    await page.waitForFunction(() => {
+      const strip = document.querySelector('[data-testid="figma-design-summary-strip"]');
+      return strip && strip.textContent.includes('160×64px');
+    }, { timeout: 15000 });
+    const imgSrcNode12 = await figmaImg.getAttribute('src');
+    assert.notEqual(imgSrcNode12, initialImgSrc, 'Figma design image src MUST update when URL changes to node-id=1-2');
+    assert.equal(await figmaImg.getAttribute('data-node-id'), '1:2');
+
+    // 7. Test the exact user URL with node-id=0-1&p=f&t=mb24dKflvSkdj3ye-0 even when loggedIn toggle is active!
+    await page.locator('[data-testid="toggle-auth-state-btn"]').click();
+    await page.locator('[data-testid="logged-in-declutter-chip"]').waitFor();
+
+    await page.locator('[data-testid="figma-url-input"]').fill(
+      'https://www.figma.com/design/vMYpz8Jc3EzVUsLQCDx3Jd/essam-qutb-s-team-library?node-id=0-1&p=f&t=mb24dKflvSkdj3ye-0'
+    );
+    await page.locator('[data-testid="sync-figma-btn"]').click();
+    await page.waitForFunction(() => {
+      const strip = document.querySelector('[data-testid="figma-design-summary-strip"]');
+      return strip && strip.textContent.includes('296×140px');
+    }, { timeout: 15000 });
+    const imgSrcNode01 = await figmaImg.getAttribute('src');
+    assert.notEqual(imgSrcNode01, imgSrcNode12, 'Figma design image src MUST update when URL changes to node-id=0-1');
+    assert.notEqual(imgSrcNode01, initialImgSrc, 'Figma design image src for node-id=0-1 must not revert to static 942:2734');
+    assert.equal(await figmaImg.getAttribute('data-node-id'), '0:1');
+
+    // 8. Test a custom Figma URL (different fileKey, fileName, and nodeId)
+    await page.locator('[data-testid="figma-url-input"]').fill(
+      'https://www.figma.com/design/AbCdEf123456/Mobile-Checkout-Flow?node-id=45-88'
+    );
+    await page.locator('[data-testid="sync-figma-btn"]').click();
+    await page.waitForFunction(() => {
+      const img = document.querySelector('[data-testid="figma-design-image"]');
+      return img && img.getAttribute('data-node-id') === '45:88';
+    }, { timeout: 15000 });
+    const imgSrcCustom = await figmaImg.getAttribute('src');
+    assert.notEqual(imgSrcCustom, imgSrcNode01, 'Figma design image src MUST update for custom URL');
+    assert.equal(await figmaImg.getAttribute('data-file-key'), 'AbCdEf123456');
+
+    // Restore clean default state (loggedIn: false and default 942-2734 node)
+    await page.locator('[data-testid="toggle-auth-state-btn"]').click();
+    await page.locator('[data-testid="figma-url-input"]').fill(
+      'https://www.figma.com/design/vMYpz8Jc3EzVUsLQCDx3Jd/essam-qutb-s-team-library?node-id=942-2734'
+    );
+    await page.locator('[data-testid="sync-figma-btn"]').click();
+    await page.waitForFunction(() => {
+      const img = document.querySelector('[data-testid="figma-design-image"]');
+      return img && img.getAttribute('data-node-id') === '942:2734';
+    }, { timeout: 15000 });
+  } finally {
+    await browser.close();
+  }
+});
+
+
 
 

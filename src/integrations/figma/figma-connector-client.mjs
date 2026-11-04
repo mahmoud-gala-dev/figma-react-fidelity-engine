@@ -119,6 +119,10 @@ export function fetchVisualStatus() {
 }
 
 import { compareWithGemini } from '../../comparison/ai-engine/gemini-comparison.mjs';
+import {
+  buildFigmaDesignImageDataUrl,
+  resolveUrlDesignNode,
+} from '../../lib/figma-image-generator.mjs';
 
 const STATIC_NODES_CATALOG = {
   '942:2734': {
@@ -319,31 +323,104 @@ export function syncFigmaDesign({
     }),
   })
     .then(readJson)
+    .then(data => {
+      if (data?.ref) {
+        const cleanReqId = nodeId ? String(nodeId).replace(/-/g, ':') : null;
+        if (cleanReqId && data.ref.nodeId !== cleanReqId) {
+          const resolved = resolveUrlDesignNode(url || data.ref.extractedUrl || '', {
+            nodeId: cleanReqId,
+            baseRef: data.ref,
+          });
+          data.ref = { ...data.ref, ...resolved };
+          data.selectedNodeId = resolved.nodeId;
+        }
+        if (!data.ref.previewUrl) {
+          data.ref.previewUrl = buildFigmaDesignImageDataUrl(data.ref);
+          data.ref.figmaImageUrl = data.ref.previewUrl;
+        }
+      }
+      if (!data.previewUrl && data?.ref?.previewUrl) {
+        data.previewUrl = data.ref.previewUrl;
+        data.figmaImageUrl = data.ref.previewUrl;
+      }
+      return data;
+    })
     .catch(() => {
-      const cleanId = (nodeId || '942:2734').replace(/-/g, ':');
-      const ref = STATIC_NODES_CATALOG[cleanId] || STATIC_NODES_CATALOG['942:2734'];
+      const cleanId = nodeId ? String(nodeId).replace(/-/g, ':') : '';
+      const baseRef = STATIC_NODES_CATALOG[cleanId] || STATIC_NODES_CATALOG['942:2734'];
+      const resolved = resolveUrlDesignNode(url || '', {
+        nodeId: cleanId || undefined,
+        baseRef,
+      });
+      const previewUrl = resolved.previewUrl || buildFigmaDesignImageDataUrl(resolved);
+      const ref = {
+        ...baseRef,
+        ...resolved,
+        previewUrl,
+        figmaImageUrl: previewUrl,
+      };
       const allNodes = [
         { id: '0:1', type: 'PAGE', name: 'Page 1' },
         { id: '942:2734', type: 'FRAME', name: 'Buy ice cream', width: 112, height: 100 },
-        { id: '1:2', type: 'COMPONENT', name: 'Primary Action Card', width: 160, height: 64 },
+        { id: '1:2', type: 'COMPONENT', name: 'Primary Action Card', width: 148, height: 108 },
       ];
+      if (!allNodes.some(n => n.id === ref.nodeId)) {
+        allNodes.push({
+          id: ref.nodeId,
+          type: ref.nodeType || 'FRAME',
+          name: ref.nodeName,
+          width: ref.width,
+          height: ref.height,
+        });
+      }
       return {
         ok: true,
         adapter: 'figma-reader',
-        source: ref.source,
+        source: ref.source || 'figma-url-node-render',
         usedDevFallback: true,
         fileKey: ref.fileKey,
         fileName: ref.fileName,
         selectedNodeId: ref.nodeId,
         ref,
+        previewUrl,
+        figmaImageUrl: previewUrl,
         index: allNodes,
         hierarchy: {
           pages: [allNodes[0]],
-          frames: [allNodes[1]],
-          components: [allNodes[2]],
+          frames: allNodes.filter(n => n.type === 'FRAME'),
+          components: allNodes.filter(n => n.type === 'COMPONENT'),
           allNodes,
         },
         syncedAt: new Date().toISOString(),
+      };
+    });
+}
+
+export function fetchFigmaDesignImage(nodeId = '942:2734', url = null) {
+  const qs = new URLSearchParams();
+  if (nodeId) qs.set('nodeId', nodeId);
+  if (url) qs.set('url', url);
+  return fetch(`/api/figma/design-image?${qs.toString()}`, { cache: 'no-store' })
+    .then(readJson)
+    .catch(() => {
+      const cleanId = String(nodeId || '').replace(/-/g, ':');
+      const baseRef = STATIC_NODES_CATALOG[cleanId] || STATIC_NODES_CATALOG['942:2734'];
+      const ref = resolveUrlDesignNode(url || '', {
+        nodeId: cleanId || undefined,
+        baseRef,
+      });
+      const imageUrl = ref.previewUrl || buildFigmaDesignImageDataUrl(ref);
+      return {
+        ok: true,
+        nodeId: ref.nodeId,
+        nodeName: ref.nodeName,
+        width: ref.width,
+        height: ref.height,
+        fileKey: ref.fileKey,
+        fileName: ref.fileName,
+        ref,
+        imageUrl,
+        previewUrl: imageUrl,
       };
     });
 }
@@ -355,7 +432,7 @@ export function fetchFigmaPages() {
       const allNodes = [
         { id: '0:1', type: 'PAGE', name: 'Page 1' },
         { id: '942:2734', type: 'FRAME', name: 'Buy ice cream', width: 112, height: 100 },
-        { id: '1:2', type: 'COMPONENT', name: 'Primary Action Card', width: 160, height: 64 },
+        { id: '1:2', type: 'COMPONENT', name: 'Primary Action Card', width: 148, height: 108 },
       ];
       return {
         ok: true,
@@ -368,16 +445,31 @@ export function fetchFigmaPages() {
     });
 }
 
-export function fetchFigmaNode(nodeId) {
+export function fetchFigmaNode(nodeId, url = null) {
   return fetch(`/api/figma/nodes/${encodeURIComponent(nodeId)}`, { cache: 'no-store' })
     .then(readJson)
+    .then(data => {
+      if (data?.ref && !data.ref.previewUrl) {
+        data.ref.previewUrl = buildFigmaDesignImageDataUrl(data.ref);
+        data.ref.figmaImageUrl = data.ref.previewUrl;
+      }
+      return data;
+    })
     .catch(() => {
       const cleanId = String(nodeId || '942:2734').replace(/-/g, ':');
-      const ref = STATIC_NODES_CATALOG[cleanId] || STATIC_NODES_CATALOG['942:2734'];
+      const baseRef = STATIC_NODES_CATALOG[cleanId] || STATIC_NODES_CATALOG['942:2734'];
+      const resolved = resolveUrlDesignNode(url || '', {
+        nodeId: cleanId,
+        baseRef,
+      });
+      const previewUrl = resolved.previewUrl || buildFigmaDesignImageDataUrl(resolved);
+      const ref = { ...baseRef, ...resolved, previewUrl, figmaImageUrl: previewUrl };
       return {
         ok: true,
         nodeId: ref.nodeId,
         ref,
+        previewUrl,
+        figmaImageUrl: previewUrl,
       };
     });
 }

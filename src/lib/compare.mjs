@@ -436,6 +436,17 @@ export function compareSpecs(reference, actual, options = {}) {
     catalogRows.push(row);
   }
 
+  for (const row of rows) {
+    const share = weightedTotal > 0 ? Math.round((1000 * row.weight) / weightedTotal) / 10 : 0;
+    row.weightShare = share;
+    const u = row.unit || '';
+    if (row.match) {
+      row.percentageReason = `تطابق تام (100%): قيمة التصميم الحالي (${row.actual ?? '—'}${u}) تطابق بيانات تصميم فيجما (${row.expected ?? '—'}${u}) ضمن السماحية المعتمدة، مما منح كامل وزن الخاصية (${share}% من النتيجة الكلية).`;
+    } else {
+      row.percentageReason = `نسبة التقارب ${row.matchPercentage ?? 0}% (0% تطابق صارم): بيانات تصميم فيجما هي (${row.expected ?? '—'}${u}) بينما التصميم الحالي (${row.actual ?? 'غير متاح'}${u}) بفارق (${row.difference})، مما أدى لخصم وزن الخاصية (${share}% من درجة المطابقة الصارمة).`;
+    }
+  }
+
   const score = weightedTotal ? Math.round((10000 * earned) / weightedTotal) / 100 : null;
   const continuousScore = weightedTotal ? Math.round((10000 * continuousEarned) / weightedTotal) / 100 : null;
   const coveragePercentage = EXTENDED_FIELDS.length

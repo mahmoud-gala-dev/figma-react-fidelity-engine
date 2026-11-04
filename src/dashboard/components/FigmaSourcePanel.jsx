@@ -1,11 +1,11 @@
-import React, { useState } from 'react';
+import React from 'react';
 
 const STATE_PILLS = {
   connected: ['connected', 'متصل ومصادق (figma-reader)'],
-  requires_login: ['requires-setup', 'يتطلب تسجيل دخول لمرة واحدة (figma-reader)'],
+  requires_login: ['requires-setup', 'يتطلب تسجيل دخول لمرة واحدة'],
   awaiting_login: ['synchronizing', 'بانتظار إكمال تسجيل الدخول...'],
-  synchronizing: ['synchronizing', 'جارٍ المزامنة...'],
-  synchronized: ['synchronized', 'تمت المزامنة (figma-reader)'],
+  synchronizing: ['synchronizing', 'جارٍ الإرسال والمطابقة...'],
+  synchronized: ['synchronized', 'تمت المزامنة والمطابقة'],
   design_changed: ['changed', 'تغيّر التصميم'],
   disconnected: ['disconnected', 'غير متصل'],
   error: ['failed', 'خطأ في الاتصال'],
@@ -14,61 +14,38 @@ const STATE_PILLS = {
 export function FigmaSourcePanel({
   figmaUrl,
   setFigmaUrl,
-  urlInfo,
   readerStatus,
   syncProgress,
   busy,
-  refNode,
+  aiBusy,
   changeNote,
-  onParseUrl,
-  onSyncFromFigma,
-  onRefreshDesign,
+  onUnifiedSendAndCompare,
   onLoginFigmaReader,
   onOpenFigmaAccount,
   onOpenCurrentUrlInBrowser,
   onToggleAuthSession,
   onRefreshAuthStatus,
-  onSyncLocalFixture,
-  onImportLocalFile,
+  onOpenSettingsPage,
 }) {
-  const [showTechMeta, setShowTechMeta] = useState(false);
   const isLoggedIn = Boolean(readerStatus?.loggedIn);
 
-  const effectiveState = busy
-    ? 'synchronizing'
-    : isLoggedIn
-      ? 'connected'
-      : readerStatus?.hasSynchronizedDesign
-        ? 'synchronized'
-        : readerStatus?.state || 'requires_login';
+  const effectiveState =
+    busy || aiBusy
+      ? 'synchronizing'
+      : isLoggedIn
+        ? 'connected'
+        : readerStatus?.hasSynchronizedDesign
+          ? 'synchronized'
+          : readerStatus?.state || 'requires_login';
   const [pillClass, pillText] = STATE_PILLS[effectiveState] || STATE_PILLS.requires_login;
 
   return (
-    <section className="connector-panel" aria-label="مصدر تصميم Figma (figma-reader)">
-      <div className="connector-header">
-        <div>
-          <h2>أ. مصدر تصميم Figma وحالة الحساب (الموصّل الأساسي: figma-reader CLI)</h2>
-          <p>
-            مزامنة مباشرة عبر <code dir="ltr">@leogcode/figma-reader</code> باستخدام ملف تعريف متصفح محلي مستقل — دون الحاجة إلى Personal Access Tokens.
-          </p>
-        </div>
-        <div className="header-badges">
-          <span
-            className={`auth-state-badge ${isLoggedIn ? 'is-logged-in' : 'is-logged-out'}`}
-            data-testid="account-login-indicator"
-          >
-            <span className="status-dot" />
-            {isLoggedIn
-              ? `مسجل الدخول حاليًا (${readerStatus?.user?.email || readerStatus?.account?.name || 'figma-fidelity-mvp'})`
-              : 'غير مسجل الدخول حاليًا على الحساب'}
-          </span>
-          <span className={`status-pill ${pillClass}`} data-testid="connection-state">
-            {pillText}
-          </span>
-        </div>
-      </div>
-
-      {/* Account Login Status & Conditional Browser Login Controls */}
+    <section
+      className="connector-panel minimal-source-hero"
+      aria-label="إدخال رابط تصميم Figma والمطابقة الفورية"
+      data-testid="minimal-source-panel"
+    >
+      {/* Compact Account Status Bar — hides browser login buttons when logged in */}
       <div
         className={`account-auth-card ${isLoggedIn ? 'auth-card-logged-in' : 'auth-card-logged-out'}`}
         data-testid="account-auth-card"
@@ -78,23 +55,34 @@ export function FigmaSourcePanel({
         <div className="account-auth-main">
           <div className="account-auth-info">
             <div className="account-auth-title" data-testid="auth-and-version-box">
-              <strong>حالة الحساب والمصادقة (Account Status):</strong>{' '}
+              <span
+                className={`auth-state-badge ${isLoggedIn ? 'is-logged-in' : 'is-logged-out'}`}
+                data-testid="account-login-indicator"
+              >
+                <span className="status-dot" />
+                {isLoggedIn
+                  ? `مسجل الدخول (${readerStatus?.user?.email || readerStatus?.account?.name || 'figma-fidelity-mvp'})`
+                  : 'غير مسجل الدخول حاليًا'}
+              </span>{' '}
+              <span className={`status-pill ${pillClass}`} data-testid="connection-state">
+                {pillText}
+              </span>{' '}
               {isLoggedIn ? (
                 <span className="auth-status-text logged-in" data-testid="logged-in-declutter-chip">
-                  ✓ أنت مسجل الدخول حاليًا على حساب Figma ({readerStatus?.user?.email || readerStatus?.account?.name || 'figma-fidelity-mvp'}) — تم إخفاء أزرار فتح المتصفح تلقائيًا لتقليل الازدحام البصري.
+                  ✓ تم إخفاء أزرار فتح المتصفح تلقائيًا لتقليل الازدحام البصري.
                 </span>
               ) : (
                 <span className="auth-status-text logged-out">
-                  {readerStatus?.message || 'أنت غير مسجل الدخول حاليًا على حساب Figma. تظهر أدناه أزرار فتح المتصفح لإتمام تسجيل الدخول.'}
+                  {readerStatus?.message || 'يمكنك تسجيل الدخول إلى حساب Figma أو استخدام الإرسال المباشر.'}
                 </span>
               )}
-              <div className="compact-meta-inline" style={{ marginTop: 6 }}>
+              <div className="compact-meta-inline" style={{ marginTop: 4 }}>
                 <span data-testid="http-dev-mode-badge">
-                  <strong>وضع الروابط:</strong> يدعم <code dir="ltr">HTTPS</code> و<code dir="ltr">HTTP</code> (Development Mode)
+                  <strong>الروابط المدعومة:</strong> <code dir="ltr">HTTPS</code> و<code dir="ltr">HTTP</code>
                 </span>
                 {' • '}
                 <span>
-                  <strong>التقدم:</strong> <span data-testid="sync-progress-text">{syncProgress || 'جاهز للمزامنة'}</span>
+                  <strong>الحالة:</strong> <span data-testid="sync-progress-text">{syncProgress || 'جاهز للإرسال والمطابقة'}</span>
                 </span>
               </div>
             </div>
@@ -129,13 +117,8 @@ export function FigmaSourcePanel({
               data-testid="toggle-auth-state-btn"
               onClick={() => onToggleAuthSession?.(!isLoggedIn)}
               disabled={busy}
-              title={
-                isLoggedIn
-                  ? 'التبديل إلى وضع غير مسجل لإظهار أزرار فتح المتصفح مرة أخرى'
-                  : 'تأكيد أنك سجلت الدخول في المتصفح لإخفاء أزرار تسجيل الدخول وتقليل الازدحام البصري'
-              }
             >
-              {isLoggedIn ? 'إظهار خيارات المتصفح / تبديل الحساب' : '✓ تم تسجيل الدخول (إخفاء الأزرار)'}
+              {isLoggedIn ? 'تبديل حالة الحساب' : '✓ تم تسجيل الدخول (إخفاء الأزرار)'}
             </button>
             {onRefreshAuthStatus && (
               <button
@@ -148,6 +131,16 @@ export function FigmaSourcePanel({
                 فحص الحالة
               </button>
             )}
+            {onOpenSettingsPage && (
+              <button
+                type="button"
+                className="btn btn-outline btn-sm"
+                data-testid="quick-open-settings-btn"
+                onClick={onOpenSettingsPage}
+              >
+                ⚙️ الإعدادات المتقدمة
+              </button>
+            )}
           </div>
         </div>
 
@@ -156,7 +149,7 @@ export function FigmaSourcePanel({
           <div className="browser-login-drawer" data-testid="browser-login-controls">
             <button
               type="button"
-              className="btn btn-primary"
+              className="btn btn-primary btn-sm"
               data-testid="login-figma-reader-btn"
               onClick={onLoginFigmaReader}
               disabled={busy}
@@ -165,7 +158,7 @@ export function FigmaSourcePanel({
             </button>
             <button
               type="button"
-              className="btn btn-secondary"
+              className="btn btn-secondary btn-sm"
               data-testid="open-figma-account-btn"
               onClick={onOpenFigmaAccount}
               disabled={busy}
@@ -174,7 +167,7 @@ export function FigmaSourcePanel({
             </button>
             <button
               type="button"
-              className="btn btn-secondary"
+              className="btn btn-secondary btn-sm"
               data-testid="open-current-url-btn"
               onClick={onOpenCurrentUrlInBrowser}
               disabled={busy}
@@ -185,101 +178,41 @@ export function FigmaSourcePanel({
         )}
       </div>
 
-      {/* Main Figma URL Input & Sync Controls */}
+      {/* Ultra-Clean Final Input: ONLY the Figma URL Input + Single Action Button */}
       <form
-        className="connector-row"
+        className="minimal-url-form"
+        data-testid="minimal-url-form"
         onSubmit={event => {
           event.preventDefault();
-          onSyncFromFigma(false);
+          onUnifiedSendAndCompare();
         }}
       >
-        <input
-          dir="ltr"
-          data-testid="figma-url-input"
-          aria-label="رابط تصميم Figma"
-          type="text"
-          placeholder="https://www.figma.com/design/FILE_KEY/name?node-id=1-2 أو http:// في وضع التطوير"
-          value={figmaUrl}
-          onChange={event => setFigmaUrl(event.target.value)}
-        />
-        <button
-          type="button"
-          className="btn btn-secondary"
-          data-testid="parse-url-btn"
-          onClick={onParseUrl}
-          disabled={busy}
-        >
-          تحليل الرابط
-        </button>
-        <button
-          type="submit"
-          className="btn btn-primary"
-          data-testid="sync-figma-btn"
-          disabled={busy}
-        >
-          {busy ? 'جارٍ المزامنة...' : 'مزامنة من Figma'}
-        </button>
-        <button
-          type="button"
-          className="btn btn-outline"
-          data-testid="refresh-figma-btn"
-          onClick={() => onRefreshDesign()}
-          disabled={busy}
-        >
-          تحديث التصميم
-        </button>
-      </form>
-
-      {/* Secondary Offline/Local Fixture Toolbar (Compact to reduce visual clutter) */}
-      <div className="secondary-source-bar">
-        <div className="secondary-source-actions">
+        <label htmlFor="main-figma-url-input" className="minimal-url-label">
+          رابط تصميم فيجما (Figma Design URL)
+        </label>
+        <div className="minimal-url-row">
+          <input
+            id="main-figma-url-input"
+            dir="ltr"
+            data-testid="figma-url-input"
+            aria-label="رابط تصميم Figma"
+            type="text"
+            placeholder="https://www.figma.com/design/FILE_KEY/name?node-id=942-2734"
+            value={figmaUrl}
+            onChange={event => setFigmaUrl(event.target.value)}
+          />
           <button
-            type="button"
-            className="btn btn-secondary btn-sm"
-            data-testid="sync-local-fixture-btn"
-            onClick={onSyncLocalFixture}
-            disabled={busy}
+            type="submit"
+            className="btn btn-primary btn-unified-action"
+            data-testid="sync-figma-btn"
+            disabled={busy || aiBusy}
           >
-            📦 مزامنة ملف .fig المرجعي عبر figma-reader
+            {busy || aiBusy
+              ? 'جارٍ الإرسال والمطابقة واستخراج النتائج...'
+              : 'إرسال ومطابقة واستخراج النتائج والمقارنة'}
           </button>
-          <label className="upload-button btn-sm">
-            📂 استيراد ملف محلي (.fig / .zip / .json)
-            <input
-              aria-label="استيراد JSON أو ZIP أو FIG"
-              type="file"
-              accept=".json,.zip,.fig,application/json,application/zip"
-              onChange={onImportLocalFile}
-            />
-          </label>
         </div>
-        <button
-          type="button"
-          className="btn-link-toggle"
-          onClick={() => setShowTechMeta(v => !v)}
-        >
-          {showTechMeta ? 'إخفاء تفاصيل المصدر ▲' : 'عرض تفاصيل الإصدار والمصدر ▼'}
-        </button>
-      </div>
-
-      {urlInfo && (
-        <div className="diagnostic-box compact-box" data-testid="parsed-url-info">
-          <strong>نتيجة تحليل الرابط:</strong> مفتاح الملف:{' '}
-          <code dir="ltr">{urlInfo.fileKey}</code> | معرّف العقدة:{' '}
-          <code dir="ltr">{urlInfo.nodeId || 'غير محدد'}</code> | البروتوكول:{' '}
-          <code dir="ltr">{urlInfo.isHttpDev ? 'HTTP (Development Mode)' : 'HTTPS'}</code> | النوع:{' '}
-          <code dir="ltr">{urlInfo.surface || 'design'}</code> | اسم الملف:{' '}
-          <code dir="ltr">{urlInfo.fileName || '—'}</code>
-        </div>
-      )}
-
-      {showTechMeta && (
-        <div className="diagnostic-box compact-box">
-          <strong>إصدار التصميم والطابع الزمني:</strong>{' '}
-          المصدر: <code dir="ltr">{refNode?.source || '—'}</code> | الإصدار/التعديل:{' '}
-          <code dir="ltr">{refNode?.sourceVersion || refNode?.fileModifiedAt || refNode?.exportedAt || 'نسخة محلية'}</code>{' '}
-          | وقت الاستحواذ: <code dir="ltr">{refNode?.acquiredAt || '—'}</code>
-        </div>
-      )}
+      </form>
 
       {changeNote ? <div className="notice">{changeNote}</div> : null}
     </section>
