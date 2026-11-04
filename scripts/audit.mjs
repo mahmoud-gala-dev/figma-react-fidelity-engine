@@ -10,6 +10,7 @@ let browser;
 try {
  browser=await chromium.launch({headless:true});
  const page=await browser.newPage({viewport:{width:1440,height:1000}, deviceScaleFactor:1});
+ await page.emulateMedia({reducedMotion:'reduce'});
  await page.goto(base,{waitUntil:'networkidle'});
  await page.locator('[data-testid="react-item"]').waitFor();
  const actual=await page.locator('[data-testid="react-item"]').evaluate(el=>{
@@ -19,8 +20,10 @@ try {
  });
  actual.backgroundColor=normalizeHexColor(actual.backgroundColor) || actual.backgroundColor;
  const result=compareSpecs(ref,actual);
- await page.screenshot({path:path.join(out,'page.png'),fullPage:true});
- await page.locator('[data-testid="react-item"]').screenshot({path:path.join(out,'react-item.png')});
+ await page.screenshot({path:path.join(out,'page.png'),fullPage:true,animations:'disabled'});
+ await page.locator('[data-testid="react-item"]').screenshot({path:path.join(out,'react-item.png'),animations:'disabled'});
+ await page.setViewportSize({width:390,height:844});
+ await page.locator('[data-testid="react-item"]').screenshot({path:path.join(out,'react-item-mobile.png'),animations:'disabled'});
  const summary={generatedAt:new Date().toISOString(),browser: 'Chromium / Playwright',url:base,reference:ref,actual,comparison:result};
  fs.writeFileSync(path.join(out,'audit.json'),JSON.stringify(summary,null,2),'utf8');
  const esc=x=>String(x??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));

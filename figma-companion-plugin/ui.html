@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <title>Figma Fidelity Companion</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Tahoma, sans-serif;
+      font-size: 13px;
+      background: #f7f9fd;
+      color: #1a253c;
+      padding: 16px;
+      line-height: 1.5;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid #e1e7f2;
+    }
+    .title { font-weight: 700; font-size: 14px; color: #1e3a8a; }
+    .badge {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .badge.connected { background: #dcfce7; color: #15803d; }
+    .badge.disconnected { background: #fee2e2; color: #b91c1c; }
+    .badge.syncing { background: #fef3c7; color: #b45309; }
+    .card {
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+    .card-label { font-size: 11px; color: #64748b; margin-bottom: 4px; }
+    .card-value { font-weight: 600; color: #0f172a; word-break: break-all; }
+    .btn {
+      width: 100%;
+      padding: 10px;
+      background: #2563eb;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      font-weight: 600;
+      font-size: 13px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: background 0.15s;
+    }
+    .btn:hover { background: #1d4ed8; }
+    .btn:disabled { background: #94a3b8; cursor: not-allowed; }
+    .status-log {
+      font-size: 11px;
+      color: #475569;
+      background: #f1f5f9;
+      padding: 8px 10px;
+      border-radius: 6px;
+      min-height: 48px;
+      white-space: pre-wrap;
+      max-height: 80px;
+      overflow-y: auto;
+    }
+    .footer-note {
+      font-size: 11px;
+      color: #64748b;
+      margin-top: 12px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="title">Figma Fidelity Companion</div>
+    <div id="statusBadge" class="badge disconnected">● غير متصل</div>
+  </div>
+
+  <div class="card">
+    <div class="card-label">المستند الحالي:</div>
+    <div id="docName" class="card-value">—</div>
+    <div style="margin-top: 8px;">
+      <div class="card-label">العنصر المحدد:</div>
+      <div id="selectedName" class="card-value">—</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-label">عنوان الخادم المحلي (Bridge):</div>
+    <div class="card-value" style="font-family: monospace; font-size: 12px; direction: ltr; text-align: right;">http://127.0.0.1:5173</div>
+  </div>
+
+  <button id="syncNowBtn" class="btn">
+    <span>مزامنة التحديد الحالي مع لوحة MVP</span>
+  </button>
+
+  <div style="margin-top: 12px;">
+    <div class="card-label">سجل النشاط:</div>
+    <div id="logArea" class="status-log">جاري بدء الاتصال بالخادم المحلي...</div>
+  </div>
+
+  <div class="footer-note">
+    اتصال محلي آمن (Localhost) • بدون Figma REST API • بدون نقل بيانات للسحابة
+  </div>
+
+  <script>
+    const BRIDGE_URL = 'http://127.0.0.1:5173';
+    let isConnected = false;
+    let currentDoc = null;
+    let pollInterval = null;
+
+    const statusBadge = document.getElementById('statusBadge');
+    const docName = document.getElementById('docName');
+    const selectedName = document.getElementById('selectedName');
+    const syncNowBtn = document.getElementById('syncNowBtn');
+    const logArea = document.getElementById('logArea');
+
+    function log(msg) {
+      logArea.textContent = msg;
+    }
+
+    function setConnectionStatus(connected, text) {
+      isConnected = connected;
+      if (connected) {
+        statusBadge.className = 'badge connected';
+        statusBadge.textContent = '● ' + (text || 'متصل بـ MVP');
+      } else {
+        statusBadge.className = 'badge disconnected';
+        statusBadge.textContent = '● ' + (text || 'غير متصل');
+      }
+    }
+
+    // 1. Send heartbeat to local bridge
+    async function sendHeartbeat() {
+      if (!currentDoc) return;
+      try {
+        const res = await fetch(`${BRIDGE_URL}/api/connector/heartbeat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            documentName: currentDoc.documentName,
+            pageName: currentDoc.pageName,
+            selectedNodeIds: currentDoc.selectedNodeId ? [currentDoc.selectedNodeId] : [],
+            selectedNodeName: currentDoc.selectedNodeName,
+            pluginVersion: '1.0.0'
+          })
+        });
+        if (res.ok) {
+          setConnectionStatus(true, 'متصل بـ MVP');
+        } else {
+          setConnectionStatus(false, 'الخادم لم يستجب');
+        }
+      } catch (err) {
+        setConnectionStatus(false, 'الخادم غير متاح');
+      }
+    }
+
+    // 2. Poll bridge for sync requests initiated by React dashboard
+    async function pollBridgeRequests() {
+      try {
+        const res = await fetch(`${BRIDGE_URL}/api/connector/poll`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.hasRequest && data.request) {
+          log(`تم استلام طلب مزامنة من لوحة التحكم للعنصر: ${data.request.nodeId || 'التحديد الحالي'}`);
+          statusBadge.className = 'badge syncing';
+          statusBadge.textContent = '● جارٍ استخراج البيانات...';
+          // Ask sandbox code.js to extract node
+          parent.postMessage({
+            pluginMessage: {
+              type: 'SYNC_REQUEST',
+              nodeId: data.request.nodeId,
+              fileKey: data.request.fileKey
+            }
+          }, '*');
+        }
+      } catch (e) {
+        // Silently retry on next tick
+      }
+    }
+
+    // 3. Push extracted data back to bridge
+    async function pushDataToBridge(payload) {
+      try {
+        log('جارٍ إرسال بيانات العنصر ولقطة الشاشة إلى لوحة التحكم...');
+        const res = await fetch(`${BRIDGE_URL}/api/connector/push-data`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const respData = await res.json();
+        if (res.ok) {
+          setConnectionStatus(true, 'تمت المزامنة بنجاح ✔');
+          log(`تمت مزامنة العنصر "${payload.node.name}" (${payload.node.width}x${payload.node.height}px) بنجاح وحفظ لقطة الشاشة الأصلية.`);
+        } else {
+          log('خطأ من الخادم: ' + (respData.error || 'فشلت المزامنة'));
+        }
+      } catch (err) {
+        log('تعذر إرسال البيانات إلى الخادم: ' + err.message);
+      }
+    }
+
+    // Manual sync button
+    syncNowBtn.onclick = () => {
+      syncNowBtn.disabled = true;
+      log('جارٍ استخراج التحديد الحالي...');
+      parent.postMessage({
+        pluginMessage: {
+          type: 'SYNC_REQUEST',
+          nodeId: currentDoc?.selectedNodeId || null
+        }
+      }, '*');
+      setTimeout(() => { syncNowBtn.disabled = false; }, 2000);
+    };
+
+    // Listen to sandbox code.js
+    window.onmessage = (event) => {
+      const msg = event.data.pluginMessage;
+      if (!msg) return;
+
+      if (msg.type === 'STATUS_UPDATE') {
+        currentDoc = msg.payload;
+        docName.textContent = msg.payload.documentName || '—';
+        selectedName.textContent = msg.payload.selectedNodeName
+          ? `${msg.payload.selectedNodeName} (${msg.payload.selectedNodeType || ''})`
+          : 'لم يتم تحديد عنصر';
+        sendHeartbeat();
+      }
+
+      if (msg.type === 'SYNC_SUCCESS') {
+        pushDataToBridge(msg.payload);
+      }
+
+      if (msg.type === 'SYNC_ERROR') {
+        log('خطأ: ' + msg.error);
+        setConnectionStatus(true);
+      }
+    };
+
+    // Start background polling and heartbeat loops
+    setInterval(sendHeartbeat, 5000);
+    setInterval(pollBridgeRequests, 1500);
+
+    // Initial check
+    setTimeout(() => {
+      parent.postMessage({ pluginMessage: { type: 'GET_STATUS' } }, '*');
+    }, 300);
+  </script>
+</body>
+</html>
+

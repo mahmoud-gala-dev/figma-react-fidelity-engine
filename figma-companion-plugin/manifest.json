@@ -1,0 +1,18 @@
+{
+  "name": "Figma Fidelity Companion",
+  "id": "figma-fidelity-companion-plugin",
+  "api": "1.0.0",
+  "main": "code.js",
+  "ui": "ui.html",
+  "editorType": ["figma", "figjam"],
+  "networkAccess": {
+    "allowedDomains": [
+      "http://127.0.0.1:5173",
+      "http://localhost:5173",
+      "http://127.0.0.1:4888",
+      "http://localhost:4888"
+    ],
+    "reasoning": "الاتصال الآمن حصراً مع لوحة تحكم Figma Fidelity MVP المحلية على 127.0.0.1 دون إرسال أي بيانات لخوادم خارجية أو استخدام Figma REST API."
+  }
+}
+

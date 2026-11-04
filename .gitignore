@@ -5,6 +5,17 @@ out/*
 !out/.gitkeep
 input/*
 !input/README.md
+.browser-profile/
+input/.browser-profile/
+input/downloads/
+input/.downloads/
+input/.connector/
 *.log
 .env*
 .DS_Store
+.browser-profile/
+.browser-profile-figma-reader/
+input/.figma-reader-cache/
+input/.figma-snapshots/
+downloads/
+

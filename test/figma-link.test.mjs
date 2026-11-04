@@ -12,4 +12,17 @@ test('allows figma link without node id',()=>{
   assert.equal(p.nodeId,null);
 });
 test('rejects external URL',()=>assert.throws(()=>parseFigmaLink('https://evil.example/design/abcdefghijklmnop'),/figma.com/));
-test('rejects http links',()=>assert.throws(()=>parseFigmaLink('http://www.figma.com/design/abcdefghijklmnop'),/HTTPS/));
+test('allows http figma links in development mode (default)',()=>{
+  const p=parseFigmaLink('http://www.figma.com/design/abcdefghijklmnop/Test?node-id=0-1');
+  assert.equal(p.fileKey,'abcdefghijklmnop');
+  assert.equal(p.nodeId,'0:1');
+  assert.equal(p.isHttpDev,true);
+  assert.equal(p.url,'https://www.figma.com/design/abcdefghijklmnop/Test?node-id=0-1');
+});
+test('allows local http dev URL in development mode',()=>{
+  const p=parseFigmaLink('http://127.0.0.1:5173/');
+  assert.equal(p.isLocalDevUrl,true);
+  assert.equal(p.isHttpDev,true);
+  assert.equal(p.localFigPath,'fixtures/sample-design.fig');
+});
+test('rejects http links when allowHttp is false (production mode)',()=>assert.throws(()=>parseFigmaLink('http://www.figma.com/design/abcdefghijklmnop',{allowHttp:false}),/HTTPS/));

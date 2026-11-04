@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<meta charset="utf-8">
+<title>Figma Fidelity Connector</title>
+<style>
+  body { font: 13px Tahoma, Arial, sans-serif; margin: 0; padding: 14px; color: #172033; }
+  h1 { font-size: 16px; margin: 0 0 8px; }
+  p, li { line-height: 1.6; }
+  input { width: 100%; box-sizing: border-box; direction: ltr; padding: 8px; margin: 6px 0 10px; }
+  button { padding: 8px 12px; cursor: pointer; }
+  code { direction: ltr; }
+  #log { white-space: pre-wrap; background: #f4f7fb; padding: 8px; min-height: 72px; }
+</style>
+<h1>موصّل المطابقة المحلي</h1>
+<p>ترسل هذه الإضافة التصميم المفتوح إلى <code>localhost:5173</code> فقط بعد لصق رمز الاقتران. لا يوجد اتصال بـ Figma REST API.</p>
+<label>رمز الاقتران من لوحة التحكم<input id="token" type="password" autocomplete="off"></label>
+<button id="save" type="button">حفظ الرمز وبدء الاتصال</button>
+<p id="log">بانتظار الرمز.</p>
+<script>
+  const endpoint = 'http://localhost:5173';
+  const tokenInput = document.getElementById('token');
+  const log = document.getElementById('log');
+  let sessionId = '';
+  let context = null;
+  let busy = false;
+  const say = text => { log.textContent = text; };
+  document.getElementById('save').onclick = () => parent.postMessage({ pluginMessage: { type: 'save-token', token: tokenInput.value.trim() } }, '*');
+  onmessage = async event => {
+    const msg = event.data.pluginMessage;
+    if (!msg) return;
+    if (msg.type === 'init') { if (msg.token) tokenInput.value = msg.token; say(msg.token ? 'تم العثور على رمز محفوظ. سيبدأ الاتصال.' : 'الصق رمز الاقتران من http://localhost:5173'); return; }
+    if (msg.type === 'token-saved') { sessionId = ''; say('حُفظ الرمز داخل Figma على هذا الجهاز.'); return; }
+    if (msg.type === 'context') { context = msg; await beat(); return; }
+    if (msg.type === 'exported') { await post('/api/figma-connector/result', { ...msg, sessionId }); say('أُرسلت العقدة إلى لوحة التحكم المحلية.'); busy = false; return; }
+    if (msg.type === 'fail') { await post('/api/figma-connector/fail', { ...msg, sessionId }); say(msg.message); busy = false; }
+  };
+  async function post(path, body) {
+    const response = await fetch(endpoint + path, { method: 'POST', headers: { 'content-type': 'application/json', 'x-fidelity-token': tokenInput.value.trim() }, body: JSON.stringify(body) });
+    if (!response.ok) say('رفض الجسر المحلي الطلب. تحقق من الرمز وأن npm run dev يعمل.');
+  }
+  async function beat() {
+    const token = tokenInput.value.trim();
+    if (!token || !context || busy) return;
+    const headers = { 'content-type': 'application/json', 'x-fidelity-token': token };
+    try {
+      if (!sessionId) {
+        const hello = await fetch(endpoint + '/api/figma-connector/hello', { method: 'POST', headers, body: JSON.stringify(context) });
+        const data = await hello.json();
+        if (!hello.ok) { say(data.error || 'فشل الربط'); return; }
+        sessionId = data.sessionId;
+        say('متصل باللوحة المحلية. اترك هذه النافذة مفتوحة.');
+      }
+      const query = new URLSearchParams({ session: sessionId, revision: context.revision || '', fileKey: context.fileKey || '', fileName: context.fileName || '', editorType: context.editorType || '' });
+      const poll = await fetch(endpoint + '/api/figma-connector/poll?' + query.toString(), { headers });
+      const data = await poll.json();
+      if (!poll.ok) { sessionId = ''; say(data.error || 'انقطعت الجلسة'); return; }
+      if (data.job) { busy = true; say('وصل طلب مزامنة. تجري قراءة العقدة...'); parent.postMessage({ pluginMessage: { type: 'export', job: data.job } }, '*'); }
+    } catch (error) { say('اللوحة المحلية غير شغّالة على المنفذ 5173. شغّل npm run dev.'); }
+  }
+  setInterval(() => parent.postMessage({ pluginMessage: { type: 'context' } }, '*'), 1500);
+</script>
+</html>
