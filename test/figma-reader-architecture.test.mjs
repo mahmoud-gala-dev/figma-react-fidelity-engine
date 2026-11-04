@@ -1100,7 +1100,7 @@ test('Unit & E2E — 5-Scene Project-Aware SVG SplashScreen choreography, dark-g
   // 1. Unit tests for splash-choreography.mjs
   assert.equal(SPLASH_SCENES.length, 5);
   assert.equal(PROJECT_SPLASH_IDENTITY.tools.length, 7);
-  assert.ok(DEFAULT_SPLASH_DURATION_MS >= 4000);
+  assert.equal(DEFAULT_SPLASH_DURATION_MS, 6400, 'Total splash duration must be 6400ms (within 6-8s window)');
 
   const s1 = computeSplashTimelineState(0);
   assert.equal(s1.activeSceneNumber, 1);
@@ -1134,7 +1134,7 @@ test('Unit & E2E — 5-Scene Project-Aware SVG SplashScreen choreography, dark-g
   assert.equal(fallbackTelemetry.refDimensions, '112×100px');
   assert.equal(fallbackTelemetry.actDimensions, '140×100px');
 
-  // 2. E2E Browser verification of SplashScreen styling, animation, and controls
+  // 2. E2E Browser verification of SplashScreen styling, scene isolation, animation, and controls
   const { chromium } = await import('playwright');
   const browser = await chromium.launch({ headless: true });
   try {
@@ -1169,13 +1169,41 @@ test('Unit & E2E — 5-Scene Project-Aware SVG SplashScreen choreography, dark-g
     assert.equal(computedStyles.pillBorderRadius, '9px', 'Splash scene pills must be styled with 9px border-radius');
     assert.equal(computedStyles.maskBlackCircles, 0, 'Must not have a black circle mask hole causing a white circle in Scene 5');
 
-    // Verify stepping through all 5 scenes
+    // Verify stepping through all 5 scenes and strict scene-layer visibility isolation
     for (let sceneNum = 1; sceneNum <= 5; sceneNum++) {
       await page.locator(`[data-testid="splash-scene-btn-${sceneNum}"]`).click();
       assert.equal(await splashRoot.getAttribute('data-active-scene'), String(sceneNum));
+
+      if (sceneNum === 1) {
+        assert.equal(await page.locator('[data-testid="splash-scene-1-hud"]').count(), 1);
+        assert.match(await page.locator('[data-testid="splash-scene-2-group"]').getAttribute('class'), /is-hidden/);
+        assert.match(await page.locator('[data-testid="splash-scene-5-group"]').getAttribute('class'), /is-hidden/);
+      } else if (sceneNum === 2) {
+        assert.equal(await page.locator('[data-testid="splash-scene-2-bridge"]').count(), 1);
+        assert.match(await page.locator('[data-testid="splash-scene-2-group"]').getAttribute('class'), /is-visible/);
+        assert.match(await page.locator('[data-testid="splash-scene-3-group"]').getAttribute('class'), /is-hidden/);
+      } else if (sceneNum === 3) {
+        assert.match(await page.locator('[data-testid="splash-scene-3-group"]').getAttribute('class'), /is-visible/);
+        assert.match(await page.locator('[data-testid="splash-scene-4-group"]').getAttribute('class'), /is-hidden/);
+      } else if (sceneNum === 4) {
+        assert.match(await page.locator('[data-testid="splash-scene-4-group"]').getAttribute('class'), /is-visible/);
+        assert.match(await page.locator('[data-testid="splash-scene-5-group"]').getAttribute('class'), /is-hidden/);
+      } else if (sceneNum === 5) {
+        assert.match(await page.locator('[data-testid="splash-scene-5-group"]').getAttribute('class'), /is-visible/);
+      }
     }
 
-    // Capture screenshot of Scene 5 to verify no white blotch and clean styling
+    // Verify zero vertical collision between Brand Crest and Alignment Chamber in Scene 5
+    const verticalSeparation = await page.evaluate(() => {
+      const crest = document.querySelector('[data-testid="splash-brand-crest"] circle');
+      const chamber = document.querySelector('[data-testid="splash-alignment-chamber"] rect');
+      const crestBox = crest.getBoundingClientRect();
+      const chamberBox = chamber.getBoundingClientRect();
+      return chamberBox.top - crestBox.bottom;
+    });
+    assert.ok(verticalSeparation >= 2, `Brand crest and alignment chamber must not overlap (gap=${verticalSeparation}px)`);
+
+    // Capture screenshot of Scene 5 to verify no white blotch, no overlap, and clean luxury styling
     await splashRoot.screenshot({ path: path.resolve('out', 'splash-screen-verified.png') });
     assert.equal(fs.existsSync(path.resolve('out', 'splash-screen-verified.png')), true);
 
@@ -1196,6 +1224,59 @@ test('Unit & E2E — 5-Scene Project-Aware SVG SplashScreen choreography, dark-g
 
     await page.locator('[data-testid="splash-replay-btn"]').click();
     assert.equal(await splashRoot.getAttribute('data-splash-state'), 'playing');
+
+    // 3. Test rapid concurrent scene pill clicking + Pause/Resume while live Figma URL sync updates props
+    await page.locator('[data-testid="figma-url-input"]').fill(
+      'https://www.figma.com/design/vMYpz8Jc3EzVUsLQCDx3Jd/essam-qutb-s-team-library?node-id=1-2'
+    );
+    await page.locator('[data-testid="sync-figma-btn"]').click();
+    await page.locator('[data-testid="splash-scene-btn-2"]').click();
+    await page.locator('[data-testid="splash-play-pause-btn"]').click();
+    await page.locator('[data-testid="splash-scene-btn-3"]').click();
+    await page.waitForFunction(
+      () => {
+        const figmaSourceText = document.querySelector('[data-testid="splash-figma-artboard"]');
+        return figmaSourceText && figmaSourceText.textContent.includes('1:2');
+      },
+      null,
+      { timeout: 15000 }
+    );
+
+    // Restore default 942-2734 URL
+    await page.locator('[data-testid="figma-url-input"]').fill(
+      'https://www.figma.com/design/vMYpz8Jc3EzVUsLQCDx3Jd/essam-qutb-s-team-library?node-id=942-2734'
+    );
+    await page.locator('[data-testid="sync-figma-btn"]').click();
+    await page.waitForFunction(
+      () => {
+        const figmaSourceText = document.querySelector('[data-testid="splash-figma-artboard"]');
+        return figmaSourceText && figmaSourceText.textContent.includes('942:2734');
+      },
+      null,
+      { timeout: 15000 }
+    );
+
+    // 4. Verify narrow mobile viewport (320px width) has no horizontal overflow
+    await page.setViewportSize({ width: 320, height: 640 });
+    const mobileOverflow = await page.evaluate(() => {
+      const root = document.querySelector('[data-testid="project-splash-screen"]');
+      return root.scrollWidth - root.clientWidth;
+    });
+    assert.equal(mobileOverflow, 0, 'SplashScreen must not overflow horizontally on a 320px mobile viewport');
+
+    // 5. Verify normal user browser session (cinema overlay on open -> auto-dock to minimized bar on completion)
+    const normalUserPage = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    await normalUserPage.addInitScript(() => {
+      window.__SPLASH_NORMAL_BROWSER__ = true;
+    });
+    await normalUserPage.goto('http://127.0.0.1:5173', { waitUntil: 'domcontentloaded' });
+    const normalSplash = normalUserPage.locator('[data-testid="project-splash-screen"]');
+    await normalSplash.waitFor();
+    assert.equal(await normalSplash.getAttribute('data-cinema-mode'), 'true', 'Normal browser session must open in cinematic overlay mode');
+    await normalUserPage.locator('[data-testid="splash-skip-btn"]').click();
+    assert.equal(await normalSplash.getAttribute('data-cinema-mode'), 'false', 'Skipping/completing in normal browser must exit cinema overlay');
+    assert.match(await normalSplash.getAttribute('class'), /is-minimized/, 'Completing in normal browser must dock into sleek minimized header bar');
+    await normalUserPage.close();
   } finally {
     await browser.close();
   }

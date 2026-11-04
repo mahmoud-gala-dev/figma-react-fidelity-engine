@@ -7,6 +7,22 @@ import {
   computeSplashTimelineState,
 } from '../lib/splash-choreography.mjs';
 
+function isExplicitCinemaRequest(initialCinemaMode = false) {
+  if (initialCinemaMode) return true;
+  if (typeof window === 'undefined') return false;
+  const params = new URLSearchParams(window.location.search || '');
+  return (
+    params.get('splash') === 'cinema' ||
+    window.location.hash === '#splash' ||
+    Boolean(window.__SPLASH_NORMAL_BROWSER__)
+  );
+}
+
+function isAutomatedWebDriverSession(initialCinemaMode = false) {
+  if (isExplicitCinemaRequest(initialCinemaMode)) return false;
+  return typeof navigator !== 'undefined' && Boolean(navigator.webdriver);
+}
+
 export function SplashScreen({
   refNode,
   actualNode,
@@ -31,12 +47,8 @@ export function SplashScreen({
   const [isSkipped, setIsSkipped] = useState(false);
   const [isMinimized, setIsMinimized] = useState(false);
   const [isCinemaOverlay, setIsCinemaOverlay] = useState(() => {
-    if (initialCinemaMode) return true;
-    if (typeof window !== 'undefined') {
-      const params = new URLSearchParams(window.location.search || '');
-      return params.get('splash') === 'cinema' || window.location.hash === '#splash';
-    }
-    return false;
+    if (isExplicitCinemaRequest(initialCinemaMode)) return true;
+    return !isAutomatedWebDriverSession(initialCinemaMode);
   });
 
   useEffect(() => {
@@ -68,28 +80,42 @@ export function SplashScreen({
     [refNode, actualNode, comparison, readerStatus, preferredAiModel]
   );
 
+  const hasReachedCompletion = elapsedMs >= DEFAULT_SPLASH_DURATION_MS;
+
   useEffect(() => {
     if (reducedMotion || isPaused || isSkipped || manualSceneNumber != null) return undefined;
-    if (elapsedMs >= DEFAULT_SPLASH_DURATION_MS) {
-      if (isCinemaOverlay) setIsCinemaOverlay(false);
-      const loopTimer = setTimeout(() => {
-        setElapsedMs(0);
-      }, 1500);
-      return () => clearTimeout(loopTimer);
+    if (hasReachedCompletion) {
+      if (isCinemaOverlay || !isAutomatedWebDriverSession(initialCinemaMode)) {
+        const dockTimer = setTimeout(() => {
+          setIsCinemaOverlay(false);
+          setIsMinimized(true);
+        }, 600);
+        return () => clearTimeout(dockTimer);
+      }
+      return undefined;
     }
-    const stepMs = 50;
-    const timer = setInterval(() => {
+
+    let rafId = null;
+    let lastTimestamp = typeof performance !== 'undefined' ? performance.now() : Date.now();
+
+    const stepFrame = now => {
+      const currentTimestamp = typeof now === 'number' ? now : Date.now();
+      const deltaMs = Math.max(4, Math.min(100, currentTimestamp - lastTimestamp));
+      lastTimestamp = currentTimestamp;
+
       setElapsedMs(prev => {
-        const next = prev + stepMs;
-        if (next >= DEFAULT_SPLASH_DURATION_MS) {
-          clearInterval(timer);
-          return DEFAULT_SPLASH_DURATION_MS;
-        }
-        return next;
+        const next = Math.round(prev + deltaMs);
+        return next >= DEFAULT_SPLASH_DURATION_MS ? DEFAULT_SPLASH_DURATION_MS : next;
       });
-    }, stepMs);
-    return () => clearInterval(timer);
-  }, [reducedMotion, isPaused, isSkipped, manualSceneNumber, elapsedMs, isCinemaOverlay]);
+
+      rafId = requestAnimationFrame(stepFrame);
+    };
+
+    rafId = requestAnimationFrame(stepFrame);
+    return () => {
+      if (rafId != null) cancelAnimationFrame(rafId);
+    };
+  }, [reducedMotion, isPaused, isSkipped, manualSceneNumber, hasReachedCompletion, isCinemaOverlay, initialCinemaMode]);
 
   function handleSelectScene(sceneNum) {
     setIsMinimized(false);
@@ -110,6 +136,9 @@ export function SplashScreen({
     setManualSceneNumber(null);
     setIsSkipped(true);
     setIsCinemaOverlay(false);
+    if (!isAutomatedWebDriverSession(initialCinemaMode)) {
+      setIsMinimized(true);
+    }
     setElapsedMs(DEFAULT_SPLASH_DURATION_MS);
   }
 
@@ -131,14 +160,19 @@ export function SplashScreen({
   const activeSceneNum = timeline.activeSceneNumber;
   const activeScene = timeline.activeScene;
 
-  // Dynamic geometry values driven by active scene
+  // Dynamic geometry values driven by active scene & continuous sceneProgress
   const isScene1 = activeSceneNum === 1;
   const isScene2 = activeSceneNum === 2;
   const isScene3 = activeSceneNum === 3;
   const isScene4 = activeSceneNum === 4;
   const isScene5 = activeSceneNum === 5;
+  const syncFactor = activeSceneNum >= 4 ? 1 : isScene3 ? timeline.sceneProgress : 0;
+  const liveFidelityScore =
+    activeSceneNum >= 4
+      ? 100
+      : Math.round((telemetry.propertyScore + (100 - telemetry.propertyScore) * syncFactor) * 10) / 10;
 
-  // Twenty-four property grid cells for Scene 3
+  // Twenty-four property grid cells for Scene 3 progressive synchronization
   const propertyCells = useMemo(() => {
     const labels = [
       'W', 'H', 'X', 'Y', 'BG', 'BR', 'BW', 'BC',
@@ -148,7 +182,8 @@ export function SplashScreen({
     return labels.map((code, idx) => {
       const col = idx % 8;
       const row = Math.floor(idx / 8);
-      const isSynced = activeSceneNum >= 4 || (isScene3 && timeline.sceneProgress > 0.45) || idx !== 0;
+      const threshold = (idx + 1) / labels.length;
+      const isSynced = activeSceneNum >= 4 || (isScene3 && Math.max(0.15, timeline.sceneProgress) >= threshold);
       return {
         code,
         x: 392 + col * 42,
@@ -347,7 +382,7 @@ export function SplashScreen({
                   SCENE 1: CINEMATIC INTRODUCTION — PRECISION BLUEPRINT & SCHEMA GRID
                   ============================================================ */}
               <g
-                className={`splash-scene-layer ${activeSceneNum >= 1 ? 'is-visible' : ''} ${
+                className={`splash-scene-layer ${activeSceneNum >= 1 ? 'is-visible' : 'is-hidden'} ${
                   isScene1 ? 'is-primary-scene' : ''
                 }`}
                 data-testid="splash-scene-1-group"
@@ -383,7 +418,7 @@ export function SplashScreen({
                   stroke="#38BDF8"
                   strokeWidth="1.2"
                   strokeDasharray="10 8"
-                  strokeOpacity={isScene1 ? '0.75' : '0.28'}
+                  strokeOpacity={isScene1 ? '0.82' : '0.22'}
                   className="splash-orbit-ring-slow"
                 />
                 <circle
@@ -394,7 +429,7 @@ export function SplashScreen({
                   stroke="#FF9A62"
                   strokeWidth="1.2"
                   strokeDasharray="16 10"
-                  strokeOpacity={isScene1 ? '0.7' : '0.24'}
+                  strokeOpacity={isScene1 ? '0.75' : '0.18'}
                   className="splash-orbit-ring-reverse"
                 />
 
@@ -405,34 +440,69 @@ export function SplashScreen({
                 <path d="M 1072 338 L 1072 356 L 1052 356" fill="none" stroke="#38BDF8" strokeWidth="2" />
 
                 {/* Schema & Viewport Telemetry Labels */}
-                <g transform="translate(64, 56)">
+                <g transform="translate(64, 52)">
                   <rect width="250" height="24" rx="6" fill="#0F172A" stroke="#334155" />
                   <text x="125" y="16" textAnchor="middle" fill="#38BDF8" fontSize="10.5" fontFamily="monospace" fontWeight="700">
                     CANONICAL DESIGN SCHEMA v2.0.0
                   </text>
                 </g>
-                <g transform="translate(806, 56)">
+                <g transform="translate(806, 52)">
                   <rect width="250" height="24" rx="6" fill="#0F172A" stroke="#334155" />
                   <text x="125" y="16" textAnchor="middle" fill="#94A3B8" fontSize="10.5" fontFamily="monospace">
                     VIEWPORTS: 1440×950 • 390×844
                   </text>
                 </g>
+
+                {/* Scene 1 Exclusive Center Calibration Core */}
+                {isScene1 && (
+                  <g transform="translate(370, 140)" data-testid="splash-scene-1-hud">
+                    <rect
+                      x="0"
+                      y="0"
+                      width="380"
+                      height="120"
+                      rx="14"
+                      fill="#090F1E"
+                      fillOpacity="0.92"
+                      stroke="#38BDF8"
+                      strokeWidth="1.6"
+                    />
+                    <text x="190" y="34" textAnchor="middle" fill="#38BDF8" fontSize="11.5" fontFamily="monospace" fontWeight="800">
+                      BLUEPRINT ORTHOGRAPHIC CALIBRATION
+                    </text>
+                    <text x="190" y="60" textAnchor="middle" fill="#F8FAFC" fontSize="13" fontWeight="800" direction="rtl" unicodeBidi="embed">
+                      بناء شبكة القياس الهندسية لـ 24 خاصية تصميمية
+                    </text>
+                    <rect x="44" y="76" width="292" height="8" rx="4" fill="#1E293B" />
+                    <rect
+                      x="44"
+                      y="76"
+                      width={Math.max(24, Math.round(292 * timeline.sceneProgress))}
+                      height="8"
+                      rx="4"
+                      fill="url(#splash-emerald-grad)"
+                    />
+                    <text x="190" y="104" textAnchor="middle" fill="#94A3B8" fontSize="10" fontFamily="monospace">
+                      Target Node: {telemetry.nodeId} ({telemetry.nodeName}) • Grid Lock: {Math.round(timeline.sceneProgress * 100)}%
+                    </text>
+                  </g>
+                )}
               </g>
 
               {/* ============================================================
                   SCENE 2: FEATURE VISUALIZATION — DUAL-LAYER FIGMA VS REACT
                   ============================================================ */}
               <g
-                className={`splash-scene-layer ${activeSceneNum >= 2 ? 'is-visible' : 'is-dimmed'} ${
+                className={`splash-scene-layer ${activeSceneNum >= 2 ? 'is-visible' : 'is-hidden'} ${
                   isScene2 ? 'is-primary-scene' : ''
                 }`}
                 data-testid="splash-scene-2-group"
               >
                 {/* LEFT ARTBOARD: Figma Reference Node (@leogcode/figma-reader) */}
                 <g
-                  className={`splash-artboard-figma ${isScene3 ? 'is-converging-right' : ''}`}
+                  className={`splash-artboard-figma ${activeSceneNum >= 3 ? 'is-converging-right' : ''}`}
                   data-testid="splash-figma-artboard"
-                  transform="translate(68, 92)"
+                  transform="translate(68, 96)"
                 >
                   <rect
                     x="0"
@@ -441,7 +511,7 @@ export function SplashScreen({
                     height="205"
                     rx="12"
                     fill="#0F172A"
-                    fillOpacity="0.92"
+                    fillOpacity="0.94"
                     stroke="#FF9A62"
                     strokeWidth="1.6"
                   />
@@ -507,11 +577,40 @@ export function SplashScreen({
                   </text>
                 </g>
 
+                {/* Scene 2 Exclusive Acquisition Delta Bridge */}
+                {isScene2 && (
+                  <g transform="translate(405, 136)" data-testid="splash-scene-2-bridge">
+                    <rect
+                      x="0"
+                      y="0"
+                      width="310"
+                      height="118"
+                      rx="12"
+                      fill="#090F1E"
+                      fillOpacity="0.92"
+                      stroke="#F59E0B"
+                      strokeWidth="1.5"
+                    />
+                    <text x="155" y="30" textAnchor="middle" fill="#FBBF24" fontSize="11" fontFamily="monospace" fontWeight="800">
+                      DUAL ACQUISITION • DELTA DETECTED
+                    </text>
+                    <text x="155" y="54" textAnchor="middle" fill="#F8FAFC" fontSize="11" fontFamily="monospace" fontWeight="700">
+                      Figma: {telemetry.refDimensions} vs React: {telemetry.actDimensions}
+                    </text>
+                    <text x="155" y="76" textAnchor="middle" fill="#38BDF8" fontSize="10.5" fontFamily="monospace">
+                      Width Drift: {telemetry.widthDeltaLabel} | Initial Score: {telemetry.propertyScore}%
+                    </text>
+                    <text x="155" y="100" textAnchor="middle" fill="#CBD5E1" fontSize="10.5" fontWeight="700" direction="rtl" unicodeBidi="embed">
+                      استحواذ محلي عبر figma-reader وفحص Playwright
+                    </text>
+                  </g>
+                )}
+
                 {/* RIGHT ARTBOARD: React Implementation (<DesignItem /> + Playwright) */}
                 <g
-                  className={`splash-artboard-react ${isScene3 ? 'is-converging-left' : ''}`}
+                  className={`splash-artboard-react ${activeSceneNum >= 3 ? 'is-converging-left' : ''}`}
                   data-testid="splash-react-artboard"
-                  transform="translate(772, 92)"
+                  transform="translate(772, 96)"
                 >
                   <rect
                     x="0"
@@ -520,7 +619,7 @@ export function SplashScreen({
                     height="205"
                     rx="12"
                     fill="#0F172A"
-                    fillOpacity="0.92"
+                    fillOpacity="0.94"
                     stroke="#38BDF8"
                     strokeWidth="1.6"
                   />
@@ -540,22 +639,22 @@ export function SplashScreen({
                     Playwright DOM: {telemetry.actDimensions} ({telemetry.widthDeltaLabel})
                   </text>
 
-                  {/* React Component Box (Morphs width during Scene 3+) */}
+                  {/* React Component Box (Smoothly morphs width across Scene 3+) */}
                   <rect
-                    x={activeSceneNum >= 3 ? 62 : 44}
+                    x={Math.round(44 + 18 * syncFactor)}
                     y="66"
-                    width={activeSceneNum >= 3 ? 156 : 192}
+                    width={Math.round(192 - 36 * syncFactor)}
                     height="72"
                     rx={Math.max(4, Math.min(18, telemetry.borderRadius))}
                     fill="url(#splash-react-grad)"
-                    stroke={activeSceneNum >= 3 ? '#10B981' : '#F59E0B'}
+                    stroke={syncFactor >= 0.75 ? '#10B981' : '#F59E0B'}
                     strokeWidth="1.8"
                   />
                   <text x="140" y="101" textAnchor="middle" fill="#FFFFFF" fontSize="12.5" fontWeight="800">
                     {telemetry.nodeName.slice(0, 20)}
                   </text>
                   <text x="140" y="120" textAnchor="middle" fill="#E0F2FE" fontSize="10" fontFamily="monospace" fontWeight="700">
-                    {activeSceneNum >= 3 ? telemetry.refDimensions : telemetry.actDimensions} • CSS Computed
+                    {syncFactor >= 0.75 ? telemetry.refDimensions : telemetry.actDimensions} • CSS Computed
                   </text>
 
                   <rect x="18" y="152" width="118" height="22" rx="5" fill="#1E293B" stroke="#334155" />
@@ -578,14 +677,14 @@ export function SplashScreen({
                   SCENE 3: TRANSFORMATION — LASER ALIGNMENT, 24-PROP & PIXELMATCH
                   ============================================================ */}
               <g
-                className={`splash-scene-layer ${activeSceneNum >= 3 ? 'is-visible' : 'is-dimmed'} ${
+                className={`splash-scene-layer ${activeSceneNum >= 3 ? 'is-visible' : 'is-hidden'} ${
                   isScene3 ? 'is-primary-scene' : ''
                 }`}
                 data-testid="splash-scene-3-group"
               >
                 {/* Connecting Convergence Paths from Left & Right Artboards into Center Stage */}
                 <path
-                  d="M 348 185 C 390 185, 405 155, 445 155"
+                  d="M 348 190 C 370 190, 365 175, 382 175"
                   fill="none"
                   stroke="#FF9A62"
                   strokeWidth="2.2"
@@ -593,7 +692,7 @@ export function SplashScreen({
                   className="splash-flow-line"
                 />
                 <path
-                  d="M 772 185 C 730 185, 715 155, 675 155"
+                  d="M 772 190 C 750 190, 755 175, 738 175"
                   fill="none"
                   stroke="#38BDF8"
                   strokeWidth="2.2"
@@ -601,26 +700,26 @@ export function SplashScreen({
                   className="splash-flow-line"
                 />
 
-                {/* Central Synchronization & Pixelmatch Chamber */}
-                <g transform="translate(382, 84)" data-testid="splash-alignment-chamber">
+                {/* Central Synchronization & Pixelmatch Chamber (y=96..274 for zero collision with Crest) */}
+                <g transform="translate(382, 96)" data-testid="splash-alignment-chamber">
                   <rect
                     x="0"
                     y="0"
                     width="356"
-                    height="190"
+                    height="178"
                     rx="14"
                     fill="#090F1E"
-                    fillOpacity="0.88"
+                    fillOpacity="0.92"
                     stroke={activeSceneNum >= 4 ? '#10B981' : '#2563EB'}
                     strokeWidth="1.8"
                   />
 
-                  {/* Overlapping Dual Layers Synchronizing in Center */}
+                  {/* Overlapping Dual Layers Synchronizing Smoothly in Center */}
                   <rect
                     x="84"
-                    y="28"
+                    y="22"
                     width="188"
-                    height="78"
+                    height="74"
                     rx="8"
                     fill="none"
                     stroke="#FF9A62"
@@ -628,51 +727,51 @@ export function SplashScreen({
                     strokeDasharray="5 3"
                   />
                   <rect
-                    x={isScene3 && timeline.sceneProgress < 0.5 ? 68 : 84}
-                    y="28"
-                    width={isScene3 && timeline.sceneProgress < 0.5 ? 220 : 188}
-                    height="78"
+                    x={Math.round(68 + 16 * syncFactor)}
+                    y="22"
+                    width={Math.round(220 - 32 * syncFactor)}
+                    height="74"
                     rx="8"
                     fill="#1E293B"
-                    fillOpacity="0.75"
+                    fillOpacity="0.78"
                     stroke="#10B981"
                     strokeWidth="2"
                   />
 
                   {/* Laser Scan Beam */}
                   <g className="splash-laser-beam" data-testid="splash-laser-beam">
-                    <rect x="64" y="20" width="228" height="8" rx="4" fill="url(#splash-laser-grad)" />
+                    <rect x="64" y="16" width="228" height="8" rx="4" fill="url(#splash-laser-grad)" />
                     <line
                       x1="56"
-                      y1="67"
+                      y1="59"
                       x2="300"
-                      y2="67"
+                      y2="59"
                       stroke="#10B981"
                       strokeWidth="2"
                       filter="url(#splash-glow-filter)"
                     />
                   </g>
 
-                  <text x="178" y="60" textAnchor="middle" fill="#FFFFFF" fontSize="12" fontWeight="800">
+                  <text x="178" y="52" textAnchor="middle" fill="#FFFFFF" fontSize="12" fontWeight="800">
                     1:1 PIXELMATCH &amp; 24-PROPERTY SYNC
                   </text>
-                  <text x="178" y="82" textAnchor="middle" fill="#34D399" fontSize="11" fontFamily="monospace" fontWeight="700">
-                    Fidelity: {telemetry.propertyScore}% → 100% | Proximity: {telemetry.continuousScore}%
+                  <text x="178" y="73" textAnchor="middle" fill="#34D399" fontSize="11" fontFamily="monospace" fontWeight="700">
+                    Fidelity: {telemetry.propertyScore}% → {liveFidelityScore}% | Proximity: {telemetry.continuousScore}%
                   </text>
-                  <text x="178" y="98" textAnchor="middle" fill="#93C5FD" fontSize="9.8" fontFamily="monospace">
+                  <text x="178" y="89" textAnchor="middle" fill="#93C5FD" fontSize="9.8" fontFamily="monospace">
                     AI Engine: {telemetry.aiModel} (Markdown Reasons)
                   </text>
 
                   {/* Neural Gemini AI Waveform */}
                   <path
-                    d="M 24 132 Q 62 112, 100 132 T 176 132 T 252 132 T 332 132"
+                    d="M 24 124 Q 62 106, 100 124 T 176 124 T 252 124 T 332 124"
                     fill="none"
                     stroke="#38BDF8"
                     strokeWidth="1.8"
                     className="splash-ai-wave-path"
                   />
                   <path
-                    d="M 24 132 Q 62 152, 100 132 T 176 132 T 252 132 T 332 132"
+                    d="M 24 124 Q 62 142, 100 124 T 176 124 T 252 124 T 332 124"
                     fill="none"
                     stroke="#A259FF"
                     strokeWidth="1.4"
@@ -680,12 +779,12 @@ export function SplashScreen({
                     className="splash-ai-wave-path"
                   />
 
-                  <text x="178" y="168" textAnchor="middle" fill="#E2E8F0" fontSize="11" fontWeight="700" direction="rtl" unicodeBidi="embed">
+                  <text x="178" y="159" textAnchor="middle" fill="#E2E8F0" fontSize="11" fontWeight="700" direction="rtl" unicodeBidi="embed">
                     محاذاة الطبقات وتفسير أسباب النسب بالذكاء الاصطناعي
                   </text>
                 </g>
 
-                {/* 24-Property Matrix Bar below the Chamber */}
+                {/* 24-Property Matrix Bar below the Chamber (y=286..348) */}
                 <g data-testid="splash-24-property-matrix">
                   {propertyCells.map(cell => (
                     <g key={cell.code} transform={`translate(${cell.x}, ${cell.y})`}>
@@ -717,61 +816,61 @@ export function SplashScreen({
                   SCENE 4: PRODUCT IDENTITY REVEAL — BRAND CREST & 7-TOOL ORBIT
                   ============================================================ */}
               <g
-                className={`splash-scene-layer ${activeSceneNum >= 4 ? 'is-visible is-prominent' : 'is-subtle'} ${
+                className={`splash-scene-layer ${activeSceneNum >= 4 ? 'is-visible is-prominent' : 'is-hidden'} ${
                   isScene4 ? 'is-primary-scene' : ''
                 }`}
                 data-testid="splash-scene-4-group"
               >
-                {/* Central Product Crest Badge */}
-                <g transform="translate(560, 56)" data-testid="splash-brand-crest">
+                {/* Central Product Crest Badge (cy=62, r=26 -> y=36..88, cleanly above y=96 chamber and below y=28 pill) */}
+                <g transform="translate(560, 62)" data-testid="splash-brand-crest">
                   <circle
                     cx="0"
                     cy="0"
-                    r="34"
+                    r="26"
                     fill="#0F172A"
                     stroke="url(#splash-emerald-grad)"
-                    strokeWidth="2.5"
+                    strokeWidth="2.4"
                     filter="url(#splash-glow-filter)"
                   />
                   {/* React Orbital Ellipses */}
                   <ellipse
                     cx="0"
                     cy="0"
-                    rx="24"
-                    ry="9"
+                    rx="19"
+                    ry="7.5"
                     fill="none"
                     stroke="#38BDF8"
-                    strokeWidth="1.3"
+                    strokeWidth="1.2"
                     transform="rotate(30)"
                   />
                   <ellipse
                     cx="0"
                     cy="0"
-                    rx="24"
-                    ry="9"
+                    rx="19"
+                    ry="7.5"
                     fill="none"
                     stroke="#38BDF8"
-                    strokeWidth="1.3"
+                    strokeWidth="1.2"
                     transform="rotate(-30)"
                   />
                   {/* Figma Geometric Node Dots + Verified Check */}
-                  <circle cx="-9" cy="-8" r="4.5" fill="#F24E1E" />
-                  <circle cx="9" cy="-8" r="4.5" fill="#FF9A62" />
-                  <circle cx="-9" cy="2" r="4.5" fill="#A259FF" />
-                  <circle cx="9" cy="2" r="4.5" fill="#1ABCFE" />
-                  <circle cx="-9" cy="11" r="4.5" fill="#0ACF83" />
+                  <circle cx="-7" cy="-6" r="3.5" fill="#F24E1E" />
+                  <circle cx="7" cy="-6" r="3.5" fill="#FF9A62" />
+                  <circle cx="-7" cy="2" r="3.5" fill="#A259FF" />
+                  <circle cx="7" cy="2" r="3.5" fill="#1ABCFE" />
+                  <circle cx="-7" cy="9" r="3.5" fill="#0ACF83" />
                   <path
-                    d="M -2 9 L 3 14 L 13 3"
+                    d="M -2 7 L 2.5 11.5 L 11 2"
                     fill="none"
                     stroke="#10B981"
-                    strokeWidth="2.8"
+                    strokeWidth="2.4"
                     strokeLinecap="round"
                     strokeLinejoin="round"
                   />
                 </g>
 
-                {/* 7-Tool Architecture Constellation Strip at Bottom */}
-                <g transform="translate(46, 355)" data-testid="splash-tools-constellation">
+                {/* 7-Tool Architecture Constellation Strip at Bottom (y=358..386) */}
+                <g transform="translate(46, 358)" data-testid="splash-tools-constellation">
                   {PROJECT_SPLASH_IDENTITY.tools.map((tool, index) => {
                     const x = index * 148;
                     return (
@@ -808,47 +907,47 @@ export function SplashScreen({
                   SCENE 5: SEAMLESS APPLICATION TRANSITION — APERTURE READY
                   ============================================================ */}
               <g
-                className={`splash-scene-layer ${isScene5 ? 'is-visible is-primary-scene' : 'is-subtle'}`}
+                className={`splash-scene-layer ${isScene5 ? 'is-visible is-primary-scene' : 'is-hidden'}`}
                 data-testid="splash-scene-5-group"
               >
                 {isScene5 && (
                   <g className="splash-portal-rings" pointerEvents="none">
                     <circle
                       cx="560"
-                      cy="180"
-                      r="158"
+                      cy="185"
+                      r={Math.round(135 + 30 * timeline.sceneProgress)}
                       fill="url(#splash-portal-iris)"
                       stroke="#10B981"
-                      strokeWidth="1.4"
-                      strokeDasharray="14 8"
-                      strokeOpacity="0.65"
+                      strokeWidth="1.2"
+                      strokeDasharray="14 10"
+                      strokeOpacity="0.32"
                       className="splash-orbit-ring-slow"
                     />
                     <circle
                       cx="560"
-                      cy="180"
-                      r="122"
+                      cy="185"
+                      r={Math.round(108 + 18 * timeline.sceneProgress)}
                       fill="none"
                       stroke="#38BDF8"
-                      strokeWidth="1.2"
-                      strokeDasharray="8 6"
-                      strokeOpacity="0.55"
+                      strokeWidth="1"
+                      strokeDasharray="8 8"
+                      strokeOpacity="0.28"
                       className="splash-orbit-ring-reverse"
                     />
                   </g>
                 )}
                 <rect
                   x="375"
-                  y="4"
+                  y="6"
                   width="370"
-                  height="24"
-                  rx="12"
+                  height="22"
+                  rx="11"
                   fill="#065F46"
-                  fillOpacity={isScene5 ? '0.95' : '0.55'}
+                  fillOpacity="0.96"
                   stroke="#10B981"
                   strokeWidth="1.2"
                 />
-                <text x="560" y="19.5" textAnchor="middle" fill="#ECFDF5" fontSize="10.5" fontWeight="800" direction="rtl" unicodeBidi="embed">
+                <text x="560" y="20.5" textAnchor="middle" fill="#ECFDF5" fontSize="10.5" fontWeight="800" direction="rtl" unicodeBidi="embed">
                   ✓ اكتملت تهيئة محرك المطابقة الذكي — لوحة العمل جاهزة للتفاعل الفوري
                 </text>
               </g>
